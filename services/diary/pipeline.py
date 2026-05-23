@@ -66,7 +66,11 @@ class DiaryPipeline:
         self._ctx = plugin.ctx
         self._storage = DiaryStorage()
         self._fetcher = MessageFetcher(plugin.ctx)
-        self._llm = LLMRunner(plugin.ctx, plugin.config.models.text_model)
+        self._llm = LLMRunner(
+            plugin.ctx,
+            plugin.config.llm.text_model,
+            timeout=plugin.config.llm.llm_timeout_seconds,
+        )
 
     @property
     def storage(self) -> DiaryStorage:
@@ -101,6 +105,13 @@ class DiaryPipeline:
                 start_time,
                 end_time,
             )
+
+        min_per_chat = self._plugin.config.diary.min_messages_per_chat
+        if min_per_chat > 0:
+            before = len(messages)
+            messages = MessageFetcher.filter_min_messages_per_chat(messages, min_per_chat)
+            if before != len(messages):
+                logger.info("min_messages_per_chat=%d 过滤后消息 %d → %d", min_per_chat, before, len(messages))
 
         min_count = self._plugin.config.diary.min_message_count
         if len(messages) < min_count:
@@ -162,7 +173,7 @@ class DiaryPipeline:
                 personality=personality,
             )
 
-            if self._plugin.config.models.show_prompt:
+            if self._plugin.config.llm.show_prompt:
                 logger.info("日记 prompt（前 500 字）: %s", prompt[:500])
 
             content = await self._call_model(prompt, timeline)

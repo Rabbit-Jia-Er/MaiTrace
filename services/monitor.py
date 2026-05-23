@@ -115,7 +115,7 @@ class FeedMonitor:
 
         # 拉说说列表
         try:
-            feeds_list = await qzone.monitor_get_list(cfg_monitor.self_readnum)
+            feeds_list = await qzone.monitor_get_list(cfg_monitor.self_read_number)
         except Exception as exc:
             logger.error("monitor_get_list 异常: %s", exc, exc_info=True)
             return False, f"获取说说列表失败: {exc}"
@@ -126,8 +126,12 @@ class FeedMonitor:
 
         bot_personality = await _get_global_str(self.plugin.ctx, "personality.personality", "一个机器人")
         bot_expression = await _get_global_str(self.plugin.ctx, "personality.reply_style", "内容积极向上")
-        runner = LLMRunner(self.plugin.ctx, self.plugin.config.models.text_model)
-        show_prompt = self.plugin.config.models.show_prompt
+        runner = LLMRunner(
+            self.plugin.ctx,
+            self.plugin.config.llm.text_model,
+            timeout=self.plugin.config.llm.llm_timeout_seconds,
+        )
+        show_prompt = self.plugin.config.llm.show_prompt
 
         # 逐条处理
         for feed in feeds_list:
@@ -212,7 +216,7 @@ class FeedMonitor:
         impression = await _get_impression(self.plugin, target_qq)
 
         # 评论
-        if allow_comment and random.random() <= cfg_monitor.comment_possibility:
+        if allow_comment and random.random() <= cfg_monitor.comment_probability:
             prompt = build_comment_prompt(
                 self.plugin, target_qq, content, created_time,
                 bot_personality, bot_expression, impression, rt_con,
@@ -232,7 +236,7 @@ class FeedMonitor:
             logger.info("静默期或按概率跳过评论")
 
         # 点赞
-        if allow_like and random.random() <= cfg_monitor.like_possibility:
+        if allow_like and random.random() <= cfg_monitor.like_probability:
             ok = await qzone.like(fid, target_qq)
             if ok:
                 logger.info("点赞成功 %s: %s", target_qq, content[:20])

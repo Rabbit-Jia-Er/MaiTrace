@@ -143,7 +143,11 @@ async def optimize_image_prompt(plugin, message: str, personality: str) -> Optio
     # 兜底：自己走 ctx.llm
     from .prompts import build_image_prompt
     from .llm_runner import LLMRunner
-    runner = LLMRunner(plugin.ctx, plugin.config.models.text_model)
+    runner = LLMRunner(
+        plugin.ctx,
+        plugin.config.llm.text_model,
+        timeout=plugin.config.llm.llm_timeout_seconds,
+    )
     prompt = build_image_prompt(plugin, message, personality)
     success, image_prompt = await runner.generate(prompt, temperature=0.3)
     if success and image_prompt:
@@ -200,12 +204,12 @@ async def collect_images_for_feed(
     images: list[bytes] = []
     done_paths: list[str] = []
 
-    if not plugin.config.send.enable_image:
+    if not plugin.config.image.enable_image:
         return images, done_paths
 
-    image_mode = plugin.config.send.image_mode
-    image_number = max(1, min(4, plugin.config.send.image_number))
-    ai_probability = max(0.0, min(1.0, plugin.config.send.ai_probability))
+    image_mode = plugin.config.image.image_mode
+    image_number = max(1, min(4, plugin.config.image.image_number))
+    ai_probability = max(0.0, min(1.0, plugin.config.image.ai_probability))
 
     if image_mode == "only_ai":
         use_ai = True
@@ -215,9 +219,9 @@ async def collect_images_for_feed(
         use_ai = random.random() < ai_probability
 
     if use_ai:
-        pic_plugin_model = plugin.config.send.pic_plugin_model
+        pic_plugin_model = plugin.config.image.pic_plugin_model
         if not pic_plugin_model:
-            logger.warning("未配置 send.pic_plugin_model，无法生 AI 图，将发纯文本")
+            logger.warning("未配置 image.pic_plugin_model，无法生 AI 图，将发纯文本")
             return images, done_paths
 
         image_prompt = await optimize_image_prompt(plugin, message, personality)
@@ -253,8 +257,8 @@ async def collect_images_for_feed(
 
 
 def cleanup_done_paths(plugin, done_paths: list[str]) -> None:
-    """根据 models.clear_image 配置决定是否删除已上传的图片。"""
-    if not plugin.config.models.clear_image:
+    """根据 image.clear_image 配置决定是否删除已上传的图片。"""
+    if not plugin.config.image.clear_image:
         return
     for path in done_paths:
         try:

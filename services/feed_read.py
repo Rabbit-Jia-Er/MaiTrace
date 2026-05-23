@@ -167,10 +167,14 @@ async def read_and_engage(
     bot_personality = await _get_global_str(plugin.ctx, "personality.personality", "一个机器人")
     bot_expression = await _get_global_str(plugin.ctx, "personality.reply_style", "内容积极向上")
 
-    runner = LLMRunner(plugin.ctx, plugin.config.models.text_model)
-    like_p = plugin.config.read.like_possibility
-    comment_p = plugin.config.read.comment_possibility
-    show_prompt = plugin.config.models.show_prompt
+    runner = LLMRunner(
+        plugin.ctx,
+        plugin.config.llm.text_model,
+        timeout=plugin.config.llm.llm_timeout_seconds,
+    )
+    like_p = plugin.config.read.like_probability
+    comment_p = plugin.config.read.comment_probability
+    show_prompt = plugin.config.llm.show_prompt
 
     for feed in feeds_list:
         if feed.get("error"):

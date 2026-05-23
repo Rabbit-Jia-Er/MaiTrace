@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Mapping
 from typing import Any, ClassVar, Optional
 
 from maibot_sdk import (
@@ -27,6 +28,75 @@ from .config import MaiTracePluginConfig
 logger = logging.getLogger("maitrace.plugin")
 
 
+# ===== 配置迁移：v3.0 → v3.1 =====
+# v3.1 把 [send] 中的图片相关字段拆到新段 [image]，把 [models] 改名 [llm] 并把图片字段移到 [image]。
+# 拼写矫正字段 (like/comment_possibility, self_readnum) 通过 AliasChoices 在 config.py 中向后兼容，
+# 此处只处理"跨段搬迁"——pydantic v2 alias 不能跨 section。
+_IMAGE_FIELDS_FROM_SEND = (
+    "enable_image",
+    "image_mode",
+    "ai_probability",
+    "image_number",
+    "pic_plugin_model",
+)
+_IMAGE_FIELDS_FROM_LLM = ("image_prompt", "clear_image")
+_LLM_FIELDS = ("text_model", "llm_timeout_seconds", "show_prompt")
+
+
+def _migrate_v30_to_v31(raw_config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """把旧 [send].image_* / [models].* 搬到 [image] / [llm]。返回 (新 config, 是否变更)。"""
+    changed = False
+    cfg = dict(raw_config)
+
+    send = dict(cfg.get("send") or {})
+    models = dict(cfg.get("models") or {})
+    image = dict(cfg.get("image") or {})
+    llm = dict(cfg.get("llm") or {})
+
+    # 1) [send].image_* → [image]
+    for field in _IMAGE_FIELDS_FROM_SEND:
+        if field in send and field not in image:
+            image[field] = send.pop(field)
+            changed = True
+        elif field in send:
+            # [image] 已有，删除旧位置避免重复
+            send.pop(field, None)
+            changed = True
+
+    # 2) [models].image_prompt / clear_image → [image]
+    for field in _IMAGE_FIELDS_FROM_LLM:
+        if field in models and field not in image:
+            image[field] = models.pop(field)
+            changed = True
+        elif field in models:
+            models.pop(field, None)
+            changed = True
+
+    # 3) [models] 剩余字段 → [llm]
+    for field in _LLM_FIELDS:
+        if field in models and field not in llm:
+            llm[field] = models.pop(field)
+            changed = True
+        elif field in models:
+            models.pop(field, None)
+            changed = True
+
+    # 4) 整段 [models] 清理（剩余的未知字段也丢弃，因为 SDK 会因 extra="ignore" 静默丢）
+    if "models" in cfg:
+        cfg.pop("models", None)
+        changed = True
+
+    # 写回各段
+    if send:
+        cfg["send"] = send
+    if image:
+        cfg["image"] = image
+    if llm:
+        cfg["llm"] = llm
+
+    return cfg, changed
+
+
 class MaiTracePlugin(MaiBotPlugin):
     """MaiTrace：QQ 空间发说说 / 刷空间 / 日记 / 日程驱动。"""
 
@@ -40,6 +110,25 @@ class MaiTracePlugin(MaiBotPlugin):
         super().__init__()
         self._routine = None
         self._migrated_data = False
+
+    # ===== 配置迁移 hook（SDK 在校验前调用） =====
+
+    def normalize_plugin_config(
+        self,
+        config_data: Mapping[str, Any] | None,
+    ) -> tuple[dict[str, Any], bool]:
+        """v3.0 → v3.1 配置迁移 + 委托 SDK 默认归一化。
+
+        SDK 会在 config_data 与默认配置之间 merge，且 extra="ignore" 会丢弃未声明字段。
+        所以这里必须**在 super 之前**把旧位置字段搬到新位置。
+        """
+        raw = dict(config_data) if isinstance(config_data, Mapping) else {}
+        migrated, did_migrate = _migrate_v30_to_v31(raw) if raw else (raw, False)
+        if did_migrate:
+            logger.info("检测到 v3.0 旧配置，已迁移 [send] 图片字段到 [image]、[models] 改名 [llm]")
+
+        normalized, default_changed = super().normalize_plugin_config(migrated)
+        return normalized, did_migrate or default_changed
 
     # ===== 生命周期 =====
 

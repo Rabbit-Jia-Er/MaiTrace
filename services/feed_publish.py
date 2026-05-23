@@ -158,10 +158,14 @@ async def send_feed(
             plugin, topic or "随机", personality, expression,
             qzone_api=qzone, current_activity=current_activity,
         )
-        if plugin.config.models.show_prompt:
+        if plugin.config.llm.show_prompt:
             logger.info("发说说 prompt: %s", prompt)
 
-        runner = LLMRunner(plugin.ctx, plugin.config.models.text_model)
+        runner = LLMRunner(
+            plugin.ctx,
+            plugin.config.llm.text_model,
+            timeout=plugin.config.llm.llm_timeout_seconds,
+        )
         success, story = await runner.generate(prompt, temperature=0.3)
         if not success or not story:
             return False, f"生成说说内容失败: {story}"

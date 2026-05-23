@@ -163,4 +163,4 @@ def build_image_prompt(
         "personality": personality,
         "message": message,
     }
-    return _safe_format(plugin.config.models.image_prompt, data)
+    return _safe_format(plugin.config.image.image_prompt, data)

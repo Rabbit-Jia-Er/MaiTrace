@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import datetime
 import json
 import logging
@@ -234,6 +235,12 @@ class RoutineRunner:
         self.last_post_time: float = 0
         self.last_browse_time: float = 0
         self.last_diary_date: Optional[datetime.date] = None
+        # /zn debug routine 用：最近 N 次 LLM 决策与执行结果
+        self._decision_history: collections.deque[dict] = collections.deque(maxlen=20)
+
+    def get_decision_history(self) -> List[dict]:
+        """返回最近 N 次决策记录（最新在末尾）。"""
+        return list(self._decision_history)
 
     async def start(self) -> None:
         if self.is_running:
@@ -285,6 +292,7 @@ class RoutineRunner:
                     except Exception as exc:
                         logger.error("routine: 发说说失败: %s", exc)
                         traceback.print_exc()
+                        self._mark_last_executed("post", False, str(exc))
 
                 # 刷空间
                 if await self._llm_decide(activity, "browse"):
@@ -293,6 +301,7 @@ class RoutineRunner:
                     except Exception as exc:
                         logger.error("routine: 刷空间失败: %s", exc)
                         traceback.print_exc()
+                        self._mark_last_executed("browse", False, str(exc))
 
                 # 日记
                 await self._check_diary()
@@ -313,10 +322,18 @@ class RoutineRunner:
         if action == "post":
             cooldown = cfg.post_cooldown_minutes * 60
             if time.time() - self.last_post_time < cooldown:
+                self._record_decision(
+                    action=action, activity=activity,
+                    llm_answer="", decision=False, cooldown_skipped=True,
+                )
                 return False
         elif action == "browse":
             cooldown = cfg.browse_cooldown_minutes * 60
             if time.time() - self.last_browse_time < cooldown:
+                self._record_decision(
+                    action=action, activity=activity,
+                    llm_answer="", decision=False, cooldown_skipped=True,
+                )
                 return False
 
         bot_personality = await _get_global(self.plugin.ctx, "personality.personality", "")
@@ -330,13 +347,54 @@ class RoutineRunner:
             f"只回答'是'或'否'，不要输出其他内容。"
         )
 
-        runner = LLMRunner(self.plugin.ctx, self.plugin.config.models.text_model)
+        runner = LLMRunner(
+            self.plugin.ctx,
+            self.plugin.config.llm.text_model,
+            timeout=self.plugin.config.llm.llm_timeout_seconds,
+        )
         success, answer = await runner.generate(prompt, temperature=0.3, max_tokens=10)
         if not success:
+            self._record_decision(
+                action=action, activity=activity,
+                llm_answer=f"(LLM 失败: {answer})", decision=False, cooldown_skipped=False,
+            )
             return False
         decision = "是" in answer and "否" not in answer
         logger.debug("routine: LLM 决策 %s -> '%s' -> %s", action, answer, decision)
+        self._record_decision(
+            action=action, activity=activity,
+            llm_answer=answer, decision=decision, cooldown_skipped=False,
+        )
         return decision
+
+    def _record_decision(
+        self,
+        *,
+        action: str,
+        activity: ActivityInfo,
+        llm_answer: str,
+        decision: bool,
+        cooldown_skipped: bool,
+    ) -> None:
+        self._decision_history.append({
+            "ts": time.time(),
+            "action": action,
+            "activity_type": activity.activity_type.value,
+            "activity_desc": activity.description,
+            "llm_answer": (llm_answer or "")[:200],
+            "decision": decision,
+            "cooldown_skipped": cooldown_skipped,
+            "executed": None,
+            "error": "",
+        })
+
+    def _mark_last_executed(self, action: str, executed: bool, error: str = "") -> None:
+        """回写最近一条匹配 action 的决策的 executed/error 字段。"""
+        for entry in reversed(self._decision_history):
+            if entry["action"] == action and entry["executed"] is None:
+                entry["executed"] = executed
+                entry["error"] = (error or "")[:200]
+                return
 
     # ---------- 发说说 ----------
 
@@ -350,8 +408,10 @@ class RoutineRunner:
         if success:
             self.last_post_time = time.time()
             logger.info("routine: 发说说成功: %s", story)
+            self._mark_last_executed("post", True)
         else:
             logger.error("routine: 发说说失败: %s", story)
+            self._mark_last_executed("post", False, story)
 
     # ---------- 刷空间 ----------
 
@@ -361,8 +421,10 @@ class RoutineRunner:
         if success:
             self.last_browse_time = time.time()
             logger.info("routine: 刷空间完成: %s", msg)
+            self._mark_last_executed("browse", True)
         else:
             logger.warning("routine: 刷空间结果: %s", msg)
+            self._mark_last_executed("browse", False, msg)
 
     # ---------- 日记 ----------
 

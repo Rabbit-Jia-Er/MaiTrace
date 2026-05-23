@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -22,11 +23,18 @@ from typing import Any, List, Optional
 
 import httpx
 
-from .persistence import get_cookie_file_path, get_qrcode_path
+from .persistence import (
+    get_cookie_file_path,
+    get_qrcode_path,
+    load_cookie_stats,
+    record_cookie_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
 COOKIE_METHODS = ("adapter", "napcat", "clientkey", "qrcode", "local")
+# 需要用户交互或仅作 fallback 的方式：不参与按成功率重排，始终保持原顺序末尾
+_INTERACTIVE_OR_FALLBACK_METHODS = frozenset({"qrcode", "local"})
 
 _QRCODE_URL = (
     "https://ssl.ptlogin2.qq.com/ptqrshow?appid=549000912&e=2&l=M&s=3&d=72&v=4"
@@ -45,8 +53,18 @@ _CHECK_SIG_URL = (
     "&pt_login_type=3&pt_aid=0&pt_aaid=16&pt_light=0&pt_3rd_aid=0"
 )
 
-# 上次成功保存 cookie 的时间（用于跳过频繁刷新和扫码冷却）
-_last_cookie_save_time: float = 0.0
+# 全局 cookie 状态（debug 命令 + 频率节流）
+_cookie_state: dict = {
+    "last_save_time": 0.0,
+    "last_method": "",
+    "last_error": "",
+    "uin": "",
+}
+
+
+def get_cookie_state() -> dict:
+    """供 /zn debug cookie 读取当前 cookie 状态。"""
+    return dict(_cookie_state)
 
 
 def _parse_cookie_string(cookie_str: str) -> dict:
@@ -239,6 +257,46 @@ def read_local_cookies(uin: str) -> Optional[dict]:
 # ----- 顶层入口：renew_cookies -----
 
 
+def _reorder_methods(methods: List[str], stats: dict) -> List[str]:
+    """按经验重排 cookie 方式：自动方式按 success_rate × 时间衰减降序，qrcode/local 保持原顺序末尾。
+
+    用户配置的 method 集合不变，只调整顺序。
+    """
+    if not methods:
+        return methods
+
+    auto_methods: List[str] = []
+    fallback_methods: List[str] = []
+    for m in methods:
+        if m in _INTERACTIVE_OR_FALLBACK_METHODS:
+            fallback_methods.append(m)
+        else:
+            auto_methods.append(m)
+
+    if len(auto_methods) <= 1 or not stats:
+        return auto_methods + fallback_methods
+
+    now = time.time()
+
+    def score(method: str) -> float:
+        entry = stats.get(method) or {}
+        success = int(entry.get("success", 0) or 0)
+        failure = int(entry.get("failure", 0) or 0)
+        total = success + failure
+        # 没用过的给中性 0.5
+        success_rate = (success / total) if total > 0 else 0.5
+        last_ts = float(entry.get("last_success_ts", 0.0) or 0.0)
+        if last_ts > 0:
+            hours = max(0.0, (now - last_ts) / 3600.0)
+            decay = math.exp(-hours / 24.0)
+        else:
+            decay = 0.3  # 从未成功过的方式略低权重
+        return success_rate * decay
+
+    auto_methods.sort(key=score, reverse=True)
+    return auto_methods + fallback_methods
+
+
 async def renew_cookies(
     ctx,
     *,
@@ -256,11 +314,11 @@ async def renew_cookies(
     - 距离上次成功保存 < min_refresh_interval_seconds 时跳过（默认 1 小时）。
     - 二维码方式在 skip_qr_if_recent_seconds 内跳过（默认 20 小时）。
     - 全部失败且 fallback_to_local=True 时回退读本地缓存。
+    - 自动方式（adapter/napcat/clientkey）按 cookie_stats.json 的成功率重排。
     """
-    global _last_cookie_save_time
-
     now = time.time()
-    if _last_cookie_save_time and (now - _last_cookie_save_time) < min_refresh_interval_seconds:
+    last_save = _cookie_state["last_save_time"]
+    if last_save and (now - last_save) < min_refresh_interval_seconds:
         logger.debug("距上次 cookie 刷新 < %ds，跳过", int(min_refresh_interval_seconds))
         return True
 
@@ -268,12 +326,21 @@ async def renew_cookies(
     if not valid_methods:
         logger.warning("无有效 cookie 方法，使用默认全部")
         valid_methods = list(COOKIE_METHODS)
-    logger.info("使用 cookie 方法: %s", valid_methods)
+
+    # 按经验重排
+    stats = await load_cookie_stats()
+    reordered = _reorder_methods(valid_methods, stats)
+    if reordered != valid_methods:
+        logger.info("cookie 方法按经验重排: %s → %s", valid_methods, reordered)
+    else:
+        logger.info("使用 cookie 方法: %s", reordered)
 
     cookie_dict: Optional[dict] = None
     last_error: Optional[Exception] = None
+    used_method: str = ""
 
-    for method in valid_methods:
+    for method in reordered:
+        attempt_ok = False
         try:
             if method == "adapter":
                 logger.info("尝试通过 napcat-adapter API 取 cookie...")
@@ -285,7 +352,7 @@ async def renew_cookies(
                 logger.info("尝试通过 clientkey 取 cookie...")
                 cookie_dict = await fetch_cookies_by_clientkey(uin)
             elif method == "qrcode":
-                if _last_cookie_save_time and (now - _last_cookie_save_time) < skip_qr_if_recent_seconds:
+                if last_save and (now - last_save) < skip_qr_if_recent_seconds:
                     logger.info("上次扫码登录在 20h 内，跳过 qrcode")
                     continue
                 logger.info("尝试通过扫码登录取 cookie...")
@@ -295,21 +362,37 @@ async def renew_cookies(
                 cookie_dict = read_local_cookies(uin)
             if cookie_dict:
                 logger.info("[%s] 取 cookie 成功", method)
+                attempt_ok = True
+                used_method = method
+                # local 不计入"主动获取"的成功率统计，避免污染
+                if method != "local":
+                    await record_cookie_attempt(method, True)
                 break
             logger.info("[%s] 失败，尝试下一种", method)
+            if method != "local":
+                await record_cookie_attempt(method, False)
         except Exception as exc:
             logger.error("[%s] 异常: %s", method, exc)
             last_error = exc
+            _cookie_state["last_error"] = f"[{method}] {exc}"
+            if method != "local":
+                await record_cookie_attempt(method, False)
+
+        del attempt_ok  # silence linters
 
     if cookie_dict is None and fallback_to_local and "local" not in valid_methods:
         logger.info("所有方法失败，回退读本地 cookie")
         cookie_dict = read_local_cookies(uin)
+        if cookie_dict:
+            used_method = "local"
 
     if not cookie_dict:
         if last_error:
             logger.error("全部 cookie 方法失败，最后错误: %s", last_error)
+            _cookie_state["last_error"] = str(last_error)
         else:
             logger.error("全部 cookie 方法失败")
+            _cookie_state["last_error"] = "全部方法失败"
         return False
 
     # 保存
@@ -317,9 +400,13 @@ async def renew_cookies(
         file_path = get_cookie_file_path(uin)
         with file_path.open("w", encoding="utf-8") as f:
             json.dump(cookie_dict, f, indent=4, ensure_ascii=False)
-        _last_cookie_save_time = time.time()
+        _cookie_state["last_save_time"] = time.time()
+        _cookie_state["last_method"] = used_method
+        _cookie_state["last_error"] = ""
+        _cookie_state["uin"] = uin
         logger.info("cookies 已保存至 %s", file_path)
         return True
     except Exception as exc:
         logger.error("保存 cookie 失败: %s", exc)
+        _cookie_state["last_error"] = f"保存失败: {exc}"
         return False

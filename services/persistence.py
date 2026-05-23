@@ -19,9 +19,11 @@ _PLUGIN_DIR = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PLUGIN_DIR / "data"
 _PROCESSED_LIST_PATH = _DATA_DIR / "processed_list.json"
 _PROCESSED_COMMENTS_PATH = _DATA_DIR / "processed_comments.json"
+_COOKIE_STATS_PATH = _DATA_DIR / "cookie_stats.json"
 
 _processed_list_lock = asyncio.Lock()
 _processed_comments_lock = asyncio.Lock()
+_cookie_stats_lock = asyncio.Lock()
 
 
 def _ensure_data_dir() -> None:
@@ -80,6 +82,56 @@ async def save_processed_comments(data: Dict[str, List[str]]) -> bool:
         except Exception as exc:
             logger.error("保存 processed_comments 失败: %s", exc)
             return False
+
+
+async def load_cookie_stats() -> Dict[str, Dict[str, float]]:
+    """加载 cookie 获取方式的成功率统计。
+
+    格式 {method: {"success": int, "failure": int, "last_success_ts": float}}。
+    文件不存在或损坏时返回空 dict（按用户原顺序，不阻塞流程）。
+    """
+    async with _cookie_stats_lock:
+        if not _COOKIE_STATS_PATH.exists():
+            return {}
+        try:
+            with _COOKIE_STATS_PATH.open("r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            if not isinstance(data, dict):
+                return {}
+            return data
+        except Exception as exc:
+            logger.warning("加载 cookie_stats 失败（按原顺序继续）: %s", exc)
+            return {}
+
+
+async def record_cookie_attempt(method: str, success: bool) -> None:
+    """记录一次 cookie 获取尝试结果。"""
+    if not method:
+        return
+    import time
+    async with _cookie_stats_lock:
+        data: Dict[str, Dict[str, float]] = {}
+        if _COOKIE_STATS_PATH.exists():
+            try:
+                with _COOKIE_STATS_PATH.open("r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                data = {}
+        entry = data.get(method) or {"success": 0, "failure": 0, "last_success_ts": 0.0}
+        if success:
+            entry["success"] = int(entry.get("success", 0)) + 1
+            entry["last_success_ts"] = time.time()
+        else:
+            entry["failure"] = int(entry.get("failure", 0)) + 1
+        data[method] = entry
+        try:
+            _ensure_data_dir()
+            with _COOKIE_STATS_PATH.open("w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("保存 cookie_stats 失败: %s", exc)
 
 
 def get_cookie_file_path(uin: str) -> Path:
