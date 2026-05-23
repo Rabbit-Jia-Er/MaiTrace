@@ -10,9 +10,9 @@
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/Rabbit-Jia-Er/mai_clinic_plugin",
-    "homepage": "https://github.com/Rabbit-Jia-Er/mai_clinic_plugin",
-    "issues": "https://github.com/Rabbit-Jia-Er/mai_clinic_plugin/issues"
+    "repository": "https://github.com/Rabbit-Jia-Er/MaiTrace",
+    "homepage": "https://github.com/Rabbit-Jia-Er/MaiTrace",
+    "issues": "https://github.com/Rabbit-Jia-Er/MaiTrace/issues"
   },
   "host_application": {
     "min_version": "1.0.0",

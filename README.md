@@ -35,7 +35,7 @@ MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论
 2. 克隆本仓库：
 
    ```shell
-   git clone https://github.com/Rabbit-Jia-Er/mai_clinic_plugin.git
+   git clone https://github.com/Rabbit-Jia-Er/MaiTrace.git
    ```
 
 3. 安装依赖（任选一种）：
@@ -217,6 +217,6 @@ plugins/MaiTrace/
 
 [MaiBot](https://github.com/MaiM-with-u/MaiBot)
 
-部分代码参考：[qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit)、[diary_plugin](https://github.com/bockegai/diary_plugin)、[MaiTrace v3 独立版](https://github.com/Rabbit-Jia-Er/mai_clinic_plugin)
+部分代码参考：[qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit)、[diary_plugin](https://github.com/bockegai/diary_plugin)、[MaiTrace v3 独立版](https://github.com/Rabbit-Jia-Er/MaiTrace)
 
 感谢 [xc94188](https://github.com/xc94188)、[myxxr](https://github.com/myxxr)、[UnCLAS-Prommer](https://github.com/UnCLAS-Prommer)、[XXXxx7258](https://github.com/XXXxx7258)、[heitiehu-beep](https://github.com/heitiehu-beep) 提供的功能改进。
