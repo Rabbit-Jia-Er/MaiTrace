@@ -2,6 +2,9 @@
 
 每段一个 PluginConfigBase 子类。注意 [diary.model] 段名不能叫 `model_*`
 （Pydantic v2 保留），所以重命名为 `diary_model`。
+
+v3.1.x 起每个字段都通过 ``json_schema_extra`` 提供 UI 字段（label / hint / order
+等），WebUI 实际渲染这些短文本；``description`` 保留长说明用于 schema 文档场景。
 """
 
 from __future__ import annotations
@@ -69,407 +72,531 @@ class PluginSection(PluginConfigBase):
     """插件基础（Napcat 连接与 Cookie 获取）。"""
 
     __ui_label__: ClassVar[str] = "插件"
+    __ui_icon__: ClassVar[str] = "info"
     __ui_order__: ClassVar[int] = 0
 
     enabled: bool = Field(
         default=True,
         description="是否启用插件。关闭后所有功能停止（发说说/刷空间/日记/Routine）。",
+        json_schema_extra={"label": "启用插件", "hint": "关闭后所有功能停止", "order": 1},
     )
     config_version: str = Field(
         default="3.1.0",
-        description="配置文件版本号，由 SDK 自动维护。请勿手动修改，否则可能跳过自动迁移。",
+        description="配置文件版本号，由 SDK 自动维护。请勿手动修改。",
+        json_schema_extra={"label": "配置版本", "disabled": True, "order": 2},
     )
     http_host: str = Field(
         default="127.0.0.1",
-        description=(
-            "Napcat HTTP 服务器地址。仅在 cookie_methods 包含 napcat 时使用。"
-            "本机部署填 127.0.0.1，Docker 部署常填 napcat（与容器名一致）。"
-        ),
+        description="Napcat HTTP 服务器地址。本机部署填 127.0.0.1，Docker 部署常填 napcat。",
+        json_schema_extra={
+            "label": "Napcat 地址",
+            "hint": "仅 cookie_methods 含 napcat 时用；Docker 填 napcat",
+            "placeholder": "127.0.0.1",
+            "order": 10,
+        },
     )
     http_port: str = Field(
         default="9999",
-        description=(
-            "Napcat HTTP 服务器端口（仅 cookie_methods 包含 napcat 时使用）。"
-            "需在 Napcat WebUI 中新建 http 服务器并填写相同端口；与 9999 冲突时改成其他空闲端口。"
-        ),
+        description="Napcat HTTP 服务器端口，需在 Napcat WebUI 中新建相同端口的 http 服务器。",
+        json_schema_extra={
+            "label": "Napcat 端口",
+            "hint": "需与 Napcat WebUI 中 http 服务器配置一致",
+            "placeholder": "9999",
+            "order": 11,
+        },
     )
     napcat_token: str = Field(
         default="",
-        description=(
-            "Napcat HTTP 服务的认证 Token。若 Napcat 设置了 Token 必须填，"
-            "否则留空。注意：用纯 ASCII，特殊字符容易在 toml 引号里出问题。"
-        ),
+        description="Napcat HTTP 服务的认证 Token。若 Napcat 设置了 Token 必须填，否则留空。",
+        json_schema_extra={
+            "label": "Napcat Token",
+            "hint": "Napcat 未设置 Token 则留空；建议用纯 ASCII",
+            "placeholder": "（留空 = 不认证）",
+            "order": 12,
+        },
     )
     cookie_methods: List[str] = Field(
         default_factory=lambda: ["adapter", "napcat", "clientkey", "qrcode", "local"],
         description=(
-            "Cookie 获取顺序（按列表顺序逐个尝试）。可选项：\n"
-            "  adapter   - 通过 napcat-adapter 插件 API（推荐，无需配 HTTP）\n"
-            "  napcat    - 直接调 Napcat HTTP /get_cookies（需配 http_host/port）\n"
-            "  clientkey - 通过本机 QQ 客户端 clientkey 换 cookie（需 QQ 在同机）\n"
-            "  qrcode    - 扫码登录（data/qrcode.png，有效期约 1 天）\n"
-            "  local     - 读 data/cookies-<uin>.json 缓存\n"
-            "v3.1 起按近期成功率自动重排（qrcode/local 永远在尾部）。"
+            "Cookie 获取顺序（按列表顺序逐个尝试）。v3.1 起按近期成功率自动重排"
+            "（qrcode/local 永远在尾部）。\n"
+            "可选项: adapter / napcat / clientkey / qrcode / local"
         ),
+        json_schema_extra={
+            "label": "Cookie 获取顺序",
+            "hint": "adapter=napcat-adapter插件 / napcat=HTTP直连 / clientkey=本机QQ / qrcode=扫码 / local=本地缓存",
+            "item_type": "string",
+            "order": 20,
+        },
     )
 
 
 class SendSection(PluginConfigBase):
-    """发说说核心（/zn 命令、SendFeed Action、Routine 共用）。
-
-    图片相关已分到 [image] 段。
-    """
+    """发说说核心（/zn 命令、SendFeed Action、Routine 共用）。"""
 
     __ui_label__: ClassVar[str] = "发说说"
+    __ui_icon__: ClassVar[str] = "send"
     __ui_order__: ClassVar[int] = 1
 
     permission: List[str] = Field(
         default_factory=lambda: ["114514", "1919810", "1523640161"],
-        description=(
-            "权限 QQ 号列表，控制谁能让麦麦发说说（包括 /zn <主题>、/zn custom、/zn gen、/zn ls、SendFeed Action）。"
-            '注意：QQ 号要用半角引号包裹纯数字，例 ["3082618311"]。不要带中文逗号、空格或其他字符。'
-        ),
+        description="权限 QQ 号列表，控制谁能让麦麦发说说（/zn 系列命令 + SendFeed Action）。",
+        json_schema_extra={
+            "label": "授权 QQ",
+            "hint": '纯数字 QQ 号，例 ["3082618311"]。不要带中文逗号或空格',
+            "item_type": "string",
+            "placeholder": '["123456"]',
+            "order": 1,
+        },
     )
     permission_type: Literal["whitelist", "blacklist"] = Field(
         default="whitelist",
-        description=(
-            "权限模式。whitelist=只有 permission 列表里的 QQ 能用；"
-            "blacklist=permission 列表里的 QQ 不能用、其他都能用。"
-        ),
+        description="权限模式。whitelist=仅列表中有权限；blacklist=仅列表中无权限。",
+        json_schema_extra={
+            "label": "权限模式",
+            "hint": "whitelist=只允许列表内 / blacklist=只禁止列表内",
+            "order": 2,
+        },
     )
     prompt: str = Field(
         default=_DEFAULT_SEND_PROMPT,
         description=(
-            "生成说说的 prompt 模板。占位符（{xxx} 会被替换）：\n"
-            "  {current_time}     当前时间（HH:MM）\n"
-            "  {bot_personality}  人格描述（来自 MaiBot 全局 personality.personality）\n"
-            "  {bot_expression}   表达风格（来自 personality.reply_style）\n"
-            "  {topic}            说说主题（由命令参数或 Action 传入）\n"
-            "  {current_activity} 当前活动（Routine 模式下来自日程，其他情况为空）"
+            "生成说说的 prompt 模板。占位符：{current_time}, {bot_personality}, "
+            "{bot_expression}, {topic}, {current_activity}"
         ),
+        json_schema_extra={
+            "label": "说说 prompt",
+            "hint": "占位符: {current_time} {bot_personality} {bot_expression} {topic} {current_activity}",
+            "rows": 8,
+            "order": 10,
+        },
     )
     history_number: int = Field(
         default=5, ge=0,
-        description=(
-            "生成说说时参考的历史说说数量（取麦麦最近的 N 条放进 prompt 上下文）。"
-            "越多越能避免重复内容，但增加 token 消耗。设 0 = 不参考历史。"
-        ),
+        description="生成说说时参考的历史说说数量。越多越能避免重复，但增加 token 消耗。",
+        json_schema_extra={
+            "label": "历史参考数",
+            "hint": "0 = 不参考；越大越避免重复但越费 token",
+            "order": 11,
+        },
     )
     custom_qqaccount: str = Field(
         default="",
-        description=(
-            "/zn custom 模式从该 QQ 的私聊取最新内容作为说说。留空则禁用 custom 模式。"
-            "通常填你自己的 QQ 号，方便用私聊小作文一键转发空间。"
-        ),
+        description="/zn custom 模式从该 QQ 的私聊取最新内容作为说说。留空 = 禁用 custom 模式。",
+        json_schema_extra={
+            "label": "Custom QQ",
+            "hint": "/zn custom 模式取该 QQ 的私聊内容，留空禁用",
+            "placeholder": "（留空 = 禁用）",
+            "order": 20,
+        },
     )
     custom_only_mai: bool = Field(
         default=True,
-        description=(
-            "custom 模式取消息时只取麦麦自己说的（true）还是只取你说的（false）。"
-            "true：把麦麦在私聊里说的话当说说发；false：把你在私聊说的话当说说发。"
-        ),
+        description="custom 模式取消息时只取麦麦自己说的（true）还是只取你说的（false）。",
+        json_schema_extra={
+            "label": "只取麦麦发言",
+            "hint": "true=取麦麦在私聊里说的话 / false=取你说的话",
+            "order": 21,
+        },
     )
 
 
 class ImageSection(PluginConfigBase):
-    """配图配置（发说说时的图片来源、生成、清理）。
-
-    v3.1 新段：从原 [send] 与原 [models] 各搬一些图片相关字段过来。
-    """
+    """配图配置（发说说时的图片来源、生成、清理）。"""
 
     __ui_label__: ClassVar[str] = "配图"
+    __ui_icon__: ClassVar[str] = "image"
     __ui_order__: ClassVar[int] = 2
 
     enable_image: bool = Field(
         default=False,
-        description=(
-            "是否给说说附带图片。开启前请确认下面 image_mode + pic_plugin_model（AI 生图）"
-            "或已注册的表情包（emoji 路径）至少有一个可用，否则会发纯文本兜底。"
-        ),
+        description="是否给说说附带图片。需 pic_plugin_model（AI 生图）或表情包至少一个可用。",
+        json_schema_extra={
+            "label": "启用配图",
+            "hint": "需配 pic_plugin_model 或表情包，否则发纯文本兜底",
+            "order": 1,
+        },
     )
     image_mode: Literal["only_ai", "only_emoji", "random"] = Field(
         default="random",
-        description=(
-            "图片来源策略：\n"
-            "  only_ai    - 仅用麦麦绘卷生成的 AI 图（需配 pic_plugin_model）\n"
-            "  only_emoji - 仅从已注册表情包中随机选\n"
-            "  random     - 按 ai_probability 概率混合两者"
-        ),
+        description="图片来源策略：only_ai=仅 AI 生图，only_emoji=仅表情包，random=按概率混合。",
+        json_schema_extra={
+            "label": "图片来源",
+            "hint": "only_ai=仅AI / only_emoji=仅表情包 / random=按概率混合",
+            "depends_on": "image.enable_image",
+            "depends_value": True,
+            "order": 2,
+        },
     )
     ai_probability: float = Field(
         default=0.5, ge=0.0, le=1.0,
-        description=(
-            "仅 image_mode=random 时生效。每次生成时使用 AI 图的概率（0-1，例 0.7 = 70% 概率出 AI 图）。"
-            "image_mode=only_ai/only_emoji 时此项被忽略。"
-        ),
+        description="仅 image_mode=random 时生效。每次出 AI 图的概率（0-1）。",
+        json_schema_extra={
+            "label": "AI 图概率",
+            "hint": "仅 random 模式生效；0.7 = 70% 概率出 AI 图",
+            "depends_on": "image.image_mode",
+            "depends_value": "random",
+            "order": 3,
+        },
     )
     image_number: int = Field(
         default=1, ge=1, le=4,
-        description=(
-            "每条说说附带的图片数量（1-4）。注意：多数 AI 生图模型一次只出 1 张，"
-            "只有 Kolors 等少数模型支持多图，要 >1 前请确认 pic_plugin_model 支持。"
-        ),
+        description="每条说说附带的图片数量（1-4）。多数 AI 生图一次出 1 张，>1 需确认模型支持。",
+        json_schema_extra={
+            "label": "图片数量",
+            "hint": "1-4；多图模型仅部分支持（如 Kolors）",
+            "depends_on": "image.enable_image",
+            "depends_value": True,
+            "order": 4,
+        },
     )
     pic_plugin_model: str = Field(
         default="",
-        description=(
-            "麦麦绘卷（mais_art_journal 插件）的生图模型 key，对应该插件 config.toml 的 models.<key>。"
-            '示例："model1" / "model3"。留空 = 禁用 AI 生图（image_mode=only_ai 时会回退发纯文本）。'
-        ),
+        description="麦麦绘卷（mais_art_journal）的生图模型 key，对应该插件 config.toml 的 models.<key>。",
+        json_schema_extra={
+            "label": "绘卷模型 key",
+            "hint": '麦麦绘卷的 models.<key>，留空禁用 AI 生图',
+            "placeholder": "model3",
+            "depends_on": "image.enable_image",
+            "depends_value": True,
+            "order": 5,
+        },
     )
     image_prompt: str = Field(
         default=_DEFAULT_IMAGE_PROMPT,
-        description=(
-            "AI 生图提示词模板（当麦麦绘卷的 PromptOptimizer 不可用时作为备选）。\n"
-            "占位符：\n"
-            "  {personality}  说说主人（麦麦）的人格描述\n"
-            "  {message}      要配图的说说文本\n"
-            "  {current_time} 当前时间"
-        ),
+        description="AI 生图提示词模板（PromptOptimizer 不可用时备选）。占位符: {personality} {message} {current_time}",
+        json_schema_extra={
+            "label": "生图 prompt",
+            "hint": "占位符: {personality} {message} {current_time}",
+            "rows": 5,
+            "depends_on": "image.enable_image",
+            "depends_value": True,
+            "order": 6,
+        },
     )
     clear_image: bool = Field(
         default=True,
-        description=(
-            "AI 生图上传成功后是否删除本地 images/ 目录下的图片文件。"
-            "true = 节省磁盘空间；false = 保留所有生成结果便于查看历史。"
-        ),
+        description="AI 生图上传后是否删除本地 images/ 目录文件。true 节省磁盘，false 保留历史。",
+        json_schema_extra={
+            "label": "上传后清理",
+            "hint": "true=节省磁盘 / false=保留所有生成历史",
+            "depends_on": "image.enable_image",
+            "depends_value": True,
+            "order": 7,
+        },
     )
 
 
 class ReadSection(PluginConfigBase):
-    """读说说配置（ReadFeed Action 与刷空间评论共用 prompt）。"""
+    """读说说配置（ReadFeed Action + 刷空间评论共用 prompt）。"""
 
     __ui_label__: ClassVar[str] = "读说说"
+    __ui_icon__: ClassVar[str] = "book-open"
     __ui_order__: ClassVar[int] = 3
 
     permission: List[str] = Field(
         default_factory=lambda: ["114514", "1919810"],
-        description=(
-            "ReadFeed Action 的权限 QQ 列表（控制谁能让麦麦读某人的说说）。"
-            '例 ["123456", "789012"]，仅填纯数字 QQ 号。'
-        ),
+        description="ReadFeed Action 的权限 QQ 列表，控制谁能让麦麦读某人的说说。",
+        json_schema_extra={
+            "label": "授权 QQ",
+            "hint": '纯数字 QQ 号，例 ["123456", "789012"]',
+            "item_type": "string",
+            "placeholder": '["123456"]',
+            "order": 1,
+        },
     )
     permission_type: Literal["whitelist", "blacklist"] = Field(
         default="blacklist",
-        description=(
-            "读说说权限模式。whitelist=只有列表里的 QQ 能用；"
-            "blacklist=列表里的 QQ 不能用、其他都能用。"
-        ),
+        description="权限模式。whitelist=仅列表中有权限；blacklist=仅列表中无权限。",
+        json_schema_extra={
+            "label": "权限模式",
+            "hint": "whitelist=只允许列表内 / blacklist=只禁止列表内",
+            "order": 2,
+        },
     )
     read_number: int = Field(
         default=5, ge=1,
-        description="一次读取该好友的最新说说数量。越多耗时越长但覆盖越全，建议 3-10。",
+        description="一次读取该好友的最新说说数量。建议 3-10。",
+        json_schema_extra={
+            "label": "读取条数",
+            "hint": "一次取多少条最新说说，建议 3-10",
+            "order": 3,
+        },
     )
     like_probability: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description=(
-            "读到一条说说后点赞的概率（0-1，1.0 = 必点赞）。"
-            "v3.1 重命名：旧名 like_possibility 仍可读，但建议改成新名。"
-        ),
+        description="读到一条说说后点赞的概率（0-1，1.0 = 必点赞）。",
+        json_schema_extra={
+            "label": "点赞概率",
+            "hint": "0-1，1.0 = 必点赞（旧名 like_possibility 仍可读）",
+            "order": 4,
+        },
         validation_alias=AliasChoices("like_probability", "like_possibility"),
     )
     comment_probability: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description=(
-            "读到一条说说后评论的概率（0-1，1.0 = 必评论）。"
-            "v3.1 重命名：旧名 comment_possibility 仍可读，但建议改成新名。"
-        ),
+        description="读到一条说说后评论的概率（0-1，1.0 = 必评论）。",
+        json_schema_extra={
+            "label": "评论概率",
+            "hint": "0-1，1.0 = 必评论（旧名 comment_possibility 仍可读）",
+            "order": 5,
+        },
         validation_alias=AliasChoices("comment_probability", "comment_possibility"),
     )
     prompt: str = Field(
         default=_DEFAULT_READ_PROMPT,
         description=(
-            "对【普通说说】评论的 prompt 模板（也用于 Routine 刷空间评论好友）。\n"
-            "占位符：\n"
-            "  {current_time}     当前时间\n"
-            "  {bot_personality}  人格\n"
-            "  {bot_expression}   表达风格\n"
-            "  {target_name}      说说主人昵称\n"
-            "  {created_time}     说说发布时间\n"
-            "  {content}          说说内容\n"
-            "  {impression}       麦麦对说说主人的印象（来自 PersonInfo.memory_points）"
+            "对【普通说说】评论的 prompt（也用于 Routine 刷空间评论）。"
+            "占位符: {current_time}, {bot_personality}, {bot_expression}, "
+            "{target_name}, {created_time}, {content}, {impression}"
         ),
+        json_schema_extra={
+            "label": "评论 prompt",
+            "hint": "占位符: {target_name} {created_time} {content} {impression} {bot_personality} {bot_expression}",
+            "rows": 8,
+            "order": 10,
+        },
     )
     rt_prompt: str = Field(
         default=_DEFAULT_RT_PROMPT,
-        description=(
-            "对【转发的说说】评论的 prompt（占位符同 prompt，但多一个）：\n"
-            "  {rt_con}  原始转发内容（被转发的原说说）"
-        ),
+        description="对【转发说说】评论的 prompt。占位符同 prompt，但多 {rt_con}（原始转发内容）。",
+        json_schema_extra={
+            "label": "转发评论 prompt",
+            "hint": "占位符同 prompt + {rt_con}（被转发的原说说内容）",
+            "rows": 8,
+            "order": 11,
+        },
     )
 
 
 class MonitorSection(PluginConfigBase):
-    """刷空间配置（Routine 自动刷空间时使用，由 LLM 决定何时执行）。"""
+    """刷空间配置（Routine 自动刷空间时使用）。"""
 
     __ui_label__: ClassVar[str] = "刷空间"
+    __ui_icon__: ClassVar[str] = "rss"
     __ui_order__: ClassVar[int] = 4
 
     read_list: List[str] = Field(
         default_factory=list,
-        description=(
-            "刷空间时优先/排除的好友 QQ 列表（配合 read_list_type 使用）。"
-            '例 ["123", "456"]。空列表 + blacklist = 对所有好友刷空间。'
-        ),
+        description="刷空间时优先/排除的好友 QQ 列表（配合 read_list_type 使用）。",
+        json_schema_extra={
+            "label": "目标好友名单",
+            "hint": '纯数字 QQ 号，例 ["123", "456"]。空列表 + blacklist = 刷所有好友',
+            "item_type": "string",
+            "placeholder": "[]",
+            "order": 1,
+        },
     )
     read_list_type: Literal["whitelist", "blacklist"] = Field(
         default="blacklist",
-        description=(
-            "刷空间名单模式。whitelist=只对 read_list 里的好友刷；"
-            "blacklist=不刷 read_list 里的、刷其他所有好友。"
-        ),
+        description="名单模式。whitelist=只对 read_list 里的好友刷；blacklist=不刷 read_list 里的、刷其他所有。",
+        json_schema_extra={
+            "label": "名单模式",
+            "hint": "whitelist=只刷列表内 / blacklist=只跳过列表内",
+            "order": 2,
+        },
     )
     like_probability: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description=(
-            "刷空间遇到一条新说说后点赞的概率（0-1）。"
-            "v3.1 重命名：旧名 like_possibility 仍可读。"
-        ),
+        description="刷空间遇到一条新说说后点赞的概率（0-1）。",
+        json_schema_extra={
+            "label": "点赞概率",
+            "hint": "0-1，1.0 = 必点赞（旧名 like_possibility 仍可读）",
+            "order": 3,
+        },
         validation_alias=AliasChoices("like_probability", "like_possibility"),
     )
     comment_probability: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description=(
-            "刷空间遇到一条新说说后评论的概率（0-1）。评论 prompt 复用 [read].prompt / [read].rt_prompt。"
-            "v3.1 重命名：旧名 comment_possibility 仍可读。"
-        ),
+        description="刷空间遇到一条新说说后评论的概率。评论 prompt 复用 [read].prompt / rt_prompt。",
+        json_schema_extra={
+            "label": "评论概率",
+            "hint": "0-1；prompt 复用 [read] 段的（旧名 comment_possibility 仍可读）",
+            "order": 4,
+        },
         validation_alias=AliasChoices("comment_probability", "comment_possibility"),
     )
     silent_hours: str = Field(
         default="22:00-07:00",
-        description=(
-            "不刷空间的时间段（24 小时制）。格式 HH:MM-HH:MM，多段用半角逗号分隔。\n"
-            '例："22:00-07:00"（夜里不刷）、"22:00-07:00,12:00-14:00"（夜里和午休都不刷）。\n'
-            "留空 = 全天可刷。跨天用单段表示，如 22:00-07:00。"
-        ),
+        description="不刷空间的时间段（24 小时制）。格式 HH:MM-HH:MM，多段用半角逗号分隔。留空 = 全天可刷。",
+        json_schema_extra={
+            "label": "静默时段",
+            "hint": '例 "22:00-07:00" 或 "22:00-07:00,12:00-14:00"，留空=全天可刷',
+            "placeholder": "22:00-07:00",
+            "order": 10,
+        },
     )
     like_during_silent: bool = Field(
         default=False,
-        description=(
-            "静默时段内是否仍允许点赞。false=完全不动；true=只点赞不评论（适合保持活跃度但不打扰）。"
-            "需配合 silent_hours 使用，silent_hours 为空时此项无效。"
-        ),
+        description="静默时段内是否仍允许点赞。",
+        json_schema_extra={
+            "label": "静默期允许点赞",
+            "hint": "true=只点赞不评论（保持活跃但不打扰）",
+            "depends_on": "monitor.silent_hours",
+            "depends_value": True,
+            "order": 11,
+        },
     )
     comment_during_silent: bool = Field(
         default=False,
-        description=(
-            "静默时段内是否仍允许评论。一般保持 false，深夜评论会显得突兀。"
-            "需配合 silent_hours 使用，silent_hours 为空时此项无效。"
-        ),
+        description="静默时段内是否仍允许评论（一般保持 false，深夜评论显得突兀）。",
+        json_schema_extra={
+            "label": "静默期允许评论",
+            "hint": "深夜评论显得突兀，建议保持 false",
+            "depends_on": "monitor.silent_hours",
+            "depends_value": True,
+            "order": 12,
+        },
     )
     enable_auto_reply: bool = Field(
         default=False,
-        description=(
-            "是否自动回复自己说说下的评论。开启后：刷空间时检查麦麦自己的最近 self_read_number 条说说，"
-            "若有新评论会用 reply_prompt 生成回复并发出去。"
-        ),
+        description="是否自动回复自己说说下的评论（开启后用 reply_prompt 生成回复）。",
+        json_schema_extra={
+            "label": "自动回复评论",
+            "hint": "回复自己说说下的新评论；prompt 见 reply_prompt",
+            "order": 20,
+        },
     )
     self_read_number: int = Field(
         default=5, ge=1,
-        description=(
-            "回复自己说说评论时，检查麦麦最近多少条说说的评论区（仅 enable_auto_reply=true 时生效）。"
-            "v3.1 重命名：旧名 self_readnum 仍可读，但建议改成新名。"
-        ),
+        description="检查评论的自己最新说说数量（仅 enable_auto_reply=true 时生效）。",
+        json_schema_extra={
+            "label": "自检条数",
+            "hint": "检查麦麦最近 N 条说说的评论区（旧名 self_readnum 仍可读）",
+            "depends_on": "monitor.enable_auto_reply",
+            "depends_value": True,
+            "order": 21,
+        },
         validation_alias=AliasChoices("self_read_number", "self_readnum"),
     )
     reply_prompt: str = Field(
         default=_DEFAULT_REPLY_PROMPT,
         description=(
-            "回复【自己说说下的评论】的 prompt 模板。占位符：\n"
-            "  {current_time}     当前时间\n"
-            "  {bot_personality}  人格\n"
-            "  {bot_expression}   表达风格\n"
-            "  {nickname}         评论者昵称\n"
-            "  {created_time}     评论时间\n"
-            "  {content}          原说说内容\n"
-            "  {comment_content}  对方的评论内容\n"
-            "  {impression}       对评论者的印象"
+            "回复【自己说说下的评论】的 prompt。占位符: {current_time}, {bot_personality}, "
+            "{bot_expression}, {nickname}, {created_time}, {content}, {comment_content}, {impression}"
         ),
+        json_schema_extra={
+            "label": "回复 prompt",
+            "hint": "占位符: {nickname} {content} {comment_content} {impression} {bot_personality} {bot_expression}",
+            "rows": 8,
+            "depends_on": "monitor.enable_auto_reply",
+            "depends_value": True,
+            "order": 22,
+        },
     )
     reply_to_reply_prompt: str = Field(
         default=_DEFAULT_REPLY_TO_REPLY_PROMPT,
         description=(
-            "回复【他人空间中、对麦麦评论的回复】的 prompt（多层链式回复场景）。占位符：\n"
-            "  {bot_comment}     麦麦原先发的那条评论\n"
-            "  {reply_content}   对方对麦麦评论的回复\n"
-            "  其他占位符同 reply_prompt"
+            "回复【他人空间中、对麦麦评论的回复】的 prompt（多层链式回复）。"
+            "占位符: {bot_comment}, {reply_content}, 其余同 reply_prompt"
         ),
+        json_schema_extra={
+            "label": "链式回复 prompt",
+            "hint": "占位符: {bot_comment}（麦麦原评论）{reply_content}（对方回复）+ 其他",
+            "rows": 8,
+            "order": 23,
+        },
     )
     processed_feeds_cache_size: int = Field(
         default=100, ge=1,
-        description=(
-            "已处理说说的缓存上限（防内存无限增长）。超过后丢弃最早的记录，"
-            "已丢弃的说说有可能被再次评论一次。100 通常够用。"
-        ),
+        description="已处理说说的缓存上限（防内存无限增长）。100 通常够用。",
+        json_schema_extra={
+            "label": "说说缓存上限",
+            "hint": "防内存增长；超出后丢弃最早记录，100 够用",
+            "order": 30,
+        },
     )
     processed_comments_cache_size: int = Field(
         default=100, ge=1,
-        description=(
-            "已处理评论的缓存上限（同 processed_feeds_cache_size）。"
-            "对应 data/processed_comments.json。"
-        ),
+        description="已处理评论的缓存上限（同 processed_feeds_cache_size）。",
+        json_schema_extra={
+            "label": "评论缓存上限",
+            "hint": "同说说缓存上限，100 够用",
+            "order": 31,
+        },
     )
 
 
 class RoutineSection(PluginConfigBase):
-    """Routine 日程驱动配置（依赖 autonomous_planning_plugin 提供日程）。
+    """Routine 日程驱动配置（依赖 autonomous_planning_plugin）。
 
     Routine 是 MaiTrace 的"行为大脑"：定期读日程 → 让 LLM 决定要不要发说说/刷空间。
     """
 
     __ui_label__: ClassVar[str] = "日程驱动"
+    __ui_icon__: ClassVar[str] = "clock"
     __ui_order__: ClassVar[int] = 5
 
     check_interval_minutes: int = Field(
         default=20, ge=1,
-        description=(
-            "Routine 检查间隔（分钟）。每隔 N 分钟读一次日程，让 LLM 决策是否行动。"
-            "建议 20（保持活跃但不频繁）；调试时可改 1-3 加快观察。"
-        ),
+        description="Routine 检查间隔（分钟）。每隔 N 分钟读一次日程，让 LLM 决策是否行动。",
+        json_schema_extra={
+            "label": "检查间隔",
+            "hint": "分钟；建议 20，调试可改 1-3",
+            "order": 1,
+        },
     )
     post_cooldown_minutes: int = Field(
         default=120, ge=1,
-        description=(
-            "两次发说说的最短间隔（分钟），冷却期内 LLM 决策直接跳过。"
-            "120 = 两小时一条上限；调试可改 2-5。"
-        ),
+        description="两次发说说的最短间隔（分钟），冷却期内 LLM 决策直接跳过。",
+        json_schema_extra={
+            "label": "发说说冷却",
+            "hint": "分钟；建议 120（两小时一条上限），调试可改 2-5",
+            "order": 2,
+        },
     )
     browse_cooldown_minutes: int = Field(
         default=40, ge=1,
-        description=(
-            "两次刷空间的最短间隔（分钟），冷却期内 LLM 决策直接跳过。"
-            "40 = 约半小时一次；调试可改 2-5。"
-        ),
+        description="两次刷空间的最短间隔（分钟），冷却期内 LLM 决策直接跳过。",
+        json_schema_extra={
+            "label": "刷空间冷却",
+            "hint": "分钟；建议 40（约半小时一次），调试可改 2-5",
+            "order": 3,
+        },
     )
 
 
 class LLMSection(PluginConfigBase):
-    """LLM 调用配置（v3.1 重命名：原 [models] → [llm]，图片相关已分到 [image]）。"""
+    """LLM 调用配置（v3.1 重命名：原 [models] → [llm]）。"""
 
     __ui_label__: ClassVar[str] = "LLM"
+    __ui_icon__: ClassVar[str] = "cpu"
     __ui_order__: ClassVar[int] = 6
 
     text_model: str = Field(
         default="replyer",
         description=(
-            "文本生成所用的模型 task 名（必须在 MaiBot 主程序 config/model_config.toml 里有对应的 [model_task_config.xxx] 段）。\n"
-            "可选: replyer(默认，首要回复模型) / utils / utils_small / planner / vlm 等。"
+            "文本生成所用的模型 task 名（需在 MaiBot 主程序 config/model_config.toml 中存在）。"
+            "可选: replyer / utils / utils_small / planner / vlm 等。"
         ),
+        json_schema_extra={
+            "label": "文本模型 task",
+            "hint": "对应主程序 model_task_config 下的字段名（replyer / utils / planner ...）",
+            "placeholder": "replyer",
+            "order": 1,
+        },
     )
     llm_timeout_seconds: int = Field(
         default=60, ge=10, le=600,
         description=(
-            "单次 LLM 调用外层超时（秒）。超过会返回失败、不阻塞主循环。\n"
-            "⚠️ 注意：host RPC 桥接层有 30s 硬上限，本字段 > 30 时仍可能被 RPC 先触发 E_TIMEOUT。\n"
+            "单次 LLM 调用外层超时（秒）。⚠️ host RPC 桥接层有 30s 硬上限，"
+            "本字段 > 30 时仍可能被 RPC 先触发 E_TIMEOUT。"
             "长 prompt（如日记）建议改走 [diary_model].use_custom_model 直连。"
         ),
+        json_schema_extra={
+            "label": "LLM 超时",
+            "hint": "秒；⚠️ host RPC 桥接层 30s 硬上限，>30 仍会被切断",
+            "order": 2,
+        },
     )
     show_prompt: bool = Field(
         default=False,
-        description=(
-            "是否在日志（INFO 级别）打印每次发给 LLM 的 prompt 全文。"
-            "调试 prompt 模板时开，正式部署关，否则日志膨胀。"
-        ),
+        description="是否在日志（INFO 级别）打印每次发给 LLM 的 prompt 全文。",
+        json_schema_extra={
+            "label": "日志打印 prompt",
+            "hint": "调试 prompt 模板时开，正式部署关",
+            "order": 3,
+        },
     )
 
 
@@ -480,86 +607,115 @@ class DiarySection(PluginConfigBase):
     """
 
     __ui_label__: ClassVar[str] = "日记"
+    __ui_icon__: ClassVar[str] = "book"
     __ui_order__: ClassVar[int] = 7
 
     enabled: bool = Field(
         default=False,
-        description=(
-            "是否启用日记功能。关闭后 /zn gen / /zn ls / /zn v 仍可用，"
-            "只是不会在 schedule_time 自动生成。"
-        ),
+        description="是否启用日记功能（关闭后 /zn gen / ls / v 仍可用，只是不会在 schedule_time 自动生成）。",
+        json_schema_extra={
+            "label": "启用日记",
+            "hint": "关闭后命令仍可用，只是不会定时自动生成",
+            "order": 1,
+        },
     )
     schedule_time: str = Field(
         default="23:30",
-        description=(
-            "每日自动生成日记的时间（24 小时制，HH:MM 格式）。"
-            "Routine 在该时间点触发一次生成；当天已生成过则跳过。"
-        ),
+        description="每日自动生成日记的时间（24 小时制，HH:MM 格式）。",
+        json_schema_extra={
+            "label": "生成时间",
+            "hint": "HH:MM 24 小时制",
+            "placeholder": "23:30",
+            "depends_on": "diary.enabled",
+            "depends_value": True,
+            "order": 2,
+        },
     )
     style: Literal["diary", "qqzone", "custom"] = Field(
         default="diary",
-        description=(
-            "日记风格：\n"
-            "  diary  - 日记体（第一人称、内心独白）\n"
-            "  qqzone - 说说体（短、口语、适合发空间）\n"
-            "  custom - 自定义模板（用下面的 custom_prompt）"
-        ),
+        description="日记风格：diary=日记体 / qqzone=说说体 / custom=自定义模板。",
+        json_schema_extra={
+            "label": "日记风格",
+            "hint": "diary=日记体 / qqzone=说说体 / custom=自定义",
+            "order": 3,
+        },
     )
     min_message_count: int = Field(
         default=3, ge=1,
-        description=(
-            "生成日记所需的最少消息数量（所有聊天合计）。少于此数则跳过当天日记。"
-            "防止聊天太少时生成空洞的日记。"
-        ),
+        description="生成日记所需的最少消息数量（所有聊天合计）。少于此数则跳过当天日记。",
+        json_schema_extra={
+            "label": "最少消息数",
+            "hint": "所有聊天合计；少于此数当天跳过",
+            "order": 4,
+        },
     )
     min_messages_per_chat: int = Field(
         default=3, ge=0,
-        description=(
-            "单个聊天的最少消息数。小于此数的聊天会被整个剔除（不参与日记生成）。"
-            "用来过滤零碎水群，让 LLM 上下文更干净。"
-            "0 = 不过滤；3 = 一个群至少 3 条消息才参与。"
-        ),
+        description="单聊天最少消息数。少于此数的聊天会被剔除（不参与日记生成）。0 = 不过滤。",
+        json_schema_extra={
+            "label": "单聊最少消息",
+            "hint": "过滤零碎水群；0=不过滤",
+            "order": 5,
+        },
     )
     min_word_count: int = Field(
         default=250, ge=20, le=8000,
-        description="日记最少字数（生成的日记若不足会触发 LLM 重试/扩写）。范围 20-8000。",
+        description="日记最少字数（不足会触发 LLM 重试/扩写）。",
+        json_schema_extra={
+            "label": "最少字数",
+            "hint": "20-8000；不足会触发重试",
+            "order": 10,
+        },
     )
     max_word_count: int = Field(
         default=350, ge=20, le=8000,
-        description=(
-            "日记最多字数（生成超出会被智能截断，保留完整句子）。范围 20-8000，必须 ≥ min_word_count。"
-        ),
+        description="日记最多字数（超出会被智能截断，保留完整句子）。必须 ≥ min_word_count。",
+        json_schema_extra={
+            "label": "最多字数",
+            "hint": "20-8000；超出会智能截断，必须 ≥ 最少字数",
+            "order": 11,
+        },
     )
     filter_mode: Literal["all", "whitelist", "blacklist"] = Field(
         default="all",
-        description=(
-            "消息过滤模式（配合 target_chats 使用）：\n"
-            "  all       - 所有聊天消息都参与日记生成\n"
-            "  whitelist - 仅 target_chats 列出的聊天参与\n"
-            "  blacklist - 排除 target_chats 列出的、其他都参与"
-        ),
+        description="消息过滤模式（配合 target_chats）。all=全部 / whitelist=只取列表 / blacklist=排除列表。",
+        json_schema_extra={
+            "label": "聊天过滤",
+            "hint": "all=全部 / whitelist=只取 target_chats / blacklist=排除 target_chats",
+            "order": 20,
+        },
     )
     target_chats: str = Field(
         default="",
         description=(
-            "目标聊天列表（多行字符串，每行一个）。格式：\n"
-            "  group:群号    - 例 group:123456789\n"
-            "  private:QQ号  - 例 private:1523640161\n"
-            "filter_mode=all 时此字段被忽略。"
+            "目标聊天列表（多行字符串，每行一个）。格式: group:群号 或 private:QQ号。"
+            "filter_mode=all 时被忽略。"
         ),
+        json_schema_extra={
+            "label": "目标聊天",
+            "hint": "每行一个，例 group:123456 或 private:1523640161",
+            "placeholder": "group:123456\nprivate:1523640161",
+            "rows": 4,
+            "depends_on": "diary.filter_mode",
+            "depends_value": "whitelist",
+            "order": 21,
+        },
     )
     custom_prompt: str = Field(
         default="",
         description=(
-            "自定义日记 prompt 模板（仅 style=custom 时生效）。占位符：\n"
-            "  {date}              日期（YYYY-MM-DD）\n"
-            "  {timeline}          当日聊天时间线\n"
-            "  {date_with_weather} 带天气的日期\n"
-            "  {target_length}     目标字数（min/max 间随机）\n"
-            "  {personality_desc}  人格描述\n"
-            "  {style}             表达风格\n"
-            "  {name}              麦麦昵称"
+            "自定义日记 prompt 模板（仅 style=custom 时生效）。"
+            "占位符: {date}, {timeline}, {date_with_weather}, {target_length}, "
+            "{personality_desc}, {style}, {name}"
         ),
+        json_schema_extra={
+            "label": "自定义 prompt",
+            "hint": "占位符: {date} {timeline} {date_with_weather} {target_length} {personality_desc} {style} {name}",
+            "rows": 8,
+            "depends_on": "diary.style",
+            "depends_value": "custom",
+            "order": 30,
+        },
     )
 
 
@@ -567,58 +723,80 @@ class DiaryModelSection(PluginConfigBase):
     """日记自定义模型配置（绕过 host LLM、直连第三方 OpenAI 兼容 API）。
 
     日记 prompt 长（含整天聊天记录），常超过 host RPC 30s 超时。
-    用自定义模型直连可避免该限制。section 名故意叫 diary_model 而非 diary.model
-    （Pydantic v2 保留 model_*）。
+    用自定义模型直连可避免该限制。
     """
 
     __ui_label__: ClassVar[str] = "日记自定义模型"
+    __ui_icon__: ClassVar[str] = "zap"
     __ui_order__: ClassVar[int] = 8
 
     use_custom_model: bool = Field(
         default=False,
-        description=(
-            "是否启用自定义模型生成日记。\n"
-            "false = 走 ctx.llm.generate（用 [llm].text_model 配置的 task）；\n"
-            "true = 直连下面配的 OpenAI 兼容 API（推荐用于长 prompt）。"
-        ),
+        description="是否启用自定义模型生成日记。false=走 ctx.llm.generate；true=直连 OpenAI 兼容 API。",
+        json_schema_extra={
+            "label": "启用自定义模型",
+            "hint": "true=直连 OpenAI 兼容 API（推荐用于长 prompt）",
+            "order": 1,
+        },
     )
     api_url: str = Field(
         default="https://api.siliconflow.cn/v1",
-        description=(
-            "OpenAI 兼容 API 基础地址（不含 /chat/completions 后缀）。\n"
-            "  ✓ 正确：http://example.com/v1\n"
-            "  ✗ 错误：http://example.com/v1/chat/completions\n"
-            "仅支持 OpenAI 协议，不支持 Gemini/Claude 原生格式。"
-        ),
+        description="OpenAI 兼容 API 基础地址（不含 /chat/completions 后缀）。仅支持 OpenAI 协议。",
+        json_schema_extra={
+            "label": "API 地址",
+            "hint": "基础 URL（不含 /chat/completions）；仅支持 OpenAI 协议",
+            "placeholder": "https://api.siliconflow.cn/v1",
+            "depends_on": "diary_model.use_custom_model",
+            "depends_value": True,
+            "order": 2,
+        },
     )
     api_key: str = Field(
         default="",
-        description=(
-            "API 密钥（建议用环境变量或独立的 secrets 管理，不要明文提交到 git）。"
-            "留空会让生成日记直接失败。"
-        ),
+        description="API 密钥（建议用环境变量或 secrets 管理，不要明文提交到 git）。",
+        json_schema_extra={
+            "label": "API 密钥",
+            "hint": "建议用环境变量管理；留空会让日记生成失败",
+            "placeholder": "sk-...",
+            "depends_on": "diary_model.use_custom_model",
+            "depends_value": True,
+            "input_type": "password",
+            "order": 3,
+        },
     )
     model_name: str = Field(
         default="Pro/deepseek-ai/DeepSeek-V3",
-        description=(
-            "模型名称，跟服务商提供的 model 字段对齐。\n"
-            '示例：硅基流动 "Pro/deepseek-ai/DeepSeek-V3"、'
-            'OpenAI "gpt-4o-mini"、月之暗面 "moonshot-v1-32k"。'
-        ),
+        description="模型名称，跟服务商提供的 model 字段对齐。",
+        json_schema_extra={
+            "label": "模型名称",
+            "hint": '例 "Pro/deepseek-ai/DeepSeek-V3" / "gpt-4o-mini" / "moonshot-v1-32k"',
+            "placeholder": "Pro/deepseek-ai/DeepSeek-V3",
+            "depends_on": "diary_model.use_custom_model",
+            "depends_value": True,
+            "order": 4,
+        },
     )
     temperature: float = Field(
         default=0.7, ge=0.0, le=2.0,
-        description=(
-            "生成温度（0-2）。0 = 完全确定、1 = 平衡、>1 = 更随机。"
-            "日记建议 0.6-0.8。"
-        ),
+        description="生成温度（0-2）。0=完全确定，1=平衡，>1=更随机。日记建议 0.6-0.8。",
+        json_schema_extra={
+            "label": "温度",
+            "hint": "0-2；日记建议 0.6-0.8",
+            "depends_on": "diary_model.use_custom_model",
+            "depends_value": True,
+            "order": 5,
+        },
     )
     api_timeout: int = Field(
         default=300, ge=1, le=6000,
-        description=(
-            "API 调用超时（秒）。日记 prompt 长，聊天记录多时建议设大（300-600）。"
-            "若仍超时可在主程序 config/model_config.toml 中调大全局 timeout。"
-        ),
+        description="API 调用超时（秒）。日记 prompt 长时建议设大（300-600）。",
+        json_schema_extra={
+            "label": "API 超时",
+            "hint": "秒；长聊天建议 300-600",
+            "depends_on": "diary_model.use_custom_model",
+            "depends_value": True,
+            "order": 6,
+        },
     )
 
 
