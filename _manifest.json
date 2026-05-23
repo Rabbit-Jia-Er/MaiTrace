@@ -1,49 +1,73 @@
 {
-  "manifest_version": 1,
-  "name": "Maizone（麦麦空间）",
-  "version": "2.5.0",
-  "description": "让你的麦麦发QQ空间，评论，点赞",
+  "manifest_version": 2,
+  "id": "Rabbit-Jia-Er.MaiTrace",
+  "version": "3.0.0",
+  "name": "MaiTrace（麦时迹）",
+  "description": "让麦麦发QQ空间、读说说、自动评论点赞、回复评论、写日记，支持日程驱动。",
   "author": {
-    "name": "internetsb",
-    "url": "https://github.com/internetsb"
+    "name": "Rabbit-Jia-Er",
+    "url": "https://github.com/Rabbit-Jia-Er"
   },
   "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/Rabbit-Jia-Er/mai_clinic_plugin",
+    "homepage": "https://github.com/Rabbit-Jia-Er/mai_clinic_plugin",
+    "issues": "https://github.com/Rabbit-Jia-Er/mai_clinic_plugin/issues"
+  },
   "host_application": {
-    "min_version": "0.10.3"
+    "min_version": "1.0.0",
+    "max_version": "1.0.0"
   },
-  "homepage_url": "https://github.com/internetsb/Maizone",
-  "repository_url": "https://github.com/internetsb/Maizone",
-  "keywords": [
-    "Qzone",
-    "qq空间",
-    "说说",
-    "动态",
-    "评论",
-    "点赞"
-  ],
-  "categories": [
-    "Content Generation",
-    "External Integration"
-  ],
-  "plugin_info": {
-    "is_built_in": false,
-    "components": [
-      {
-        "type": "action",
-        "name": "send_feed",
-        "description": "根据指定主题发送一条说说"
-      },
-      {
-        "type": "action",
-        "name": "read_feed",
-        "description": "读取指定好友最近的说说，并评论点赞"
-      },
-      {
-        "type": "command",
-        "name": "zn",
-        "description": "Maizone统一命令"
-      }
-    ]
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
   },
-  "id": "internetsb.Maizone"
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "httpx",
+      "version_spec": ">=0.24.0"
+    },
+    {
+      "type": "python_package",
+      "name": "Pillow",
+      "version_spec": ">=9.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "bs4",
+      "version_spec": ">=0.0.1"
+    },
+    {
+      "type": "python_package",
+      "name": "json5",
+      "version_spec": ">=0.9.0"
+    },
+    {
+      "type": "python_package",
+      "name": "openai",
+      "version_spec": ">=1.0.0"
+    }
+  ],
+  "capabilities": [
+    "send.text",
+    "send.image",
+    "send.command",
+    "config.get",
+    "config.get_plugin",
+    "llm.generate",
+    "llm.get_available_models",
+    "message.get_by_time",
+    "message.get_by_time_in_chat",
+    "chat.get_stream_by_group_id",
+    "chat.get_stream_by_user_id",
+    "emoji.get_by_description",
+    "emoji.get_random",
+    "database.get",
+    "api.call"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": ["zh-CN"]
+  }
 }

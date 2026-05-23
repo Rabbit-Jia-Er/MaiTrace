@@ -1,216 +1,210 @@
+"""MaiTrace（麦麦空间）插件入口 — 新 SDK 版本
+
+业务逻辑全部抽到 services/，命令/动作/API 在 handlers/。
+plugin.py 只负责：装配生命周期、声明 @Command/@Action/@API 装饰器。
+"""
+
+from __future__ import annotations
+
 import asyncio
-from typing import Type
+import contextlib
+import logging
+from typing import Any, ClassVar, Optional
 
-from src.plugin_system import BasePlugin, register_plugin, ComponentInfo
-from src.plugin_system.base.config_types import ConfigField
+from maibot_sdk import (
+    API,
+    Action,
+    Command,
+    Field,
+    MaiBotPlugin,
+    PluginConfigBase,
+    Tool,
+)
+from maibot_sdk.types import ActivationType, ToolParameterInfo, ToolParamType
 
-from .actions import SendFeedAction, ReadFeedAction
-from .commands import MaizoneCommand
-from .routine import RoutineRunner
+from .config import MaiTracePluginConfig
+
+logger = logging.getLogger("maitrace.plugin")
 
 
-@register_plugin
-class MaizonePlugin(BasePlugin):
-    """Maizone插件 - 让麦麦发QQ空间"""
-    plugin_name = "MaizonePlugin"
-    plugin_description = "让麦麦实现QQ空间点赞、评论、发说说，命令 /zn"
-    plugin_author = "internetsb"
-    enable_plugin = True
-    config_file_name = "config.toml"
-    dependencies = []
-    python_dependencies = ['httpx', 'Pillow', 'bs4', 'json5', 'openai']
+class MaiTracePlugin(MaiBotPlugin):
+    """MaiTrace：QQ 空间发说说 / 刷空间 / 日记 / 日程驱动。"""
 
-    config_section_descriptions = {
-        "plugin": "插件基础配置（Napcat连接与Cookie获取方式）",
-        "send": "发送说说配置（/zn 发说说、发说说Action共用，权限同时控制 /zn gen/ls）",
-        "read": "阅读说说配置（读说说Action，关键词触发：聊天中提到'说说''空间''动态'时触发）",
-        "monitor": "刷空间配置（浏览好友说说时的评论点赞行为，评论他人说说时使用read的prompt）",
-        "routine": "日程驱动配置（由 autonomous_planning 插件日程驱动，LLM 决策是否发说说和刷空间）",
-        "models": "模型配置（文本生成模型、图片提示词、调试选项）",
-        "diary": "日记功能配置（/zn gen 手动生成或定时自动生成，权限复用send的permission）",
-    }
+    config_model: ClassVar[type[PluginConfigBase] | None] = MaiTracePluginConfig
 
-    config_schema = {
-        "plugin": {
-            "enable": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "http_host": ConfigField(type=str, default='127.0.0.1', description="Napcat http服务器地址"),
-            "http_port": ConfigField(type=str, default='9999', description="Napcat http服务器端口号"),
-            "napcat_token": ConfigField(type=str, default="", description="Napcat服务认证Token（如果Napcat设置了Token则需要填写）"),
-            "cookie_methods": ConfigField(type=list, default=['napcat', 'clientkey', 'qrcode', 'local'],
-                                          description="获取Cookie的方法，按顺序尝试，可选: napcat, clientkey, qrcode, local"),
-        },
-        "send": {
-            "permission": ConfigField(type=list, default=['114514', '1919810', '1523640161'],
-                                      description="权限QQ号列表（同时控制 /zn 发说说、/zn gen/ls 和发说说Action的权限）"),
-            "permission_type": ConfigField(type=str, default='whitelist',
-                                           description="权限模式: whitelist(仅列表中的QQ号有权限) / blacklist(仅列表中的QQ号无权限)"),
-            "enable_image": ConfigField(type=bool, default=False,
-                                        description="是否启用带图片的说说（需要配置 pic_plugin_model 或表情包插件）"),
-            "image_mode": ConfigField(type=str, default='random',
-                                      description="图片使用方式: only_ai(仅AI生成) / only_emoji(仅表情包) / random(随机混合)"),
-            "ai_probability": ConfigField(type=float, default=0.5, description="random模式下使用AI图片的概率（0-1）"),
-            "image_number": ConfigField(type=int, default=1,
-                                        description="使用的图片或表情包数量（1-4，仅部分模型支持多图，如Kolors）"),
-            "history_number": ConfigField(type=int, default=5,
-                                          description="生成说说时参考的历史说说数量（越多越能避免重复内容，但增加token消耗）"),
-            "prompt": ConfigField(type=str,
-                                  default="你是'{bot_personality}'，现在是'{current_time}'你想写一条主题是'{topic}'的说说发表在qq空间上，"
-                                          "{bot_expression}，不要刻意突出自身学科背景，不要浮夸，不要夸张修辞，可以适当使用颜文字，只输出一条说说正文的内容，不要输出多余内容"
-                                          "(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )",
-                                  description="生成说说的提示词，可用占位符: {current_time}(当前时间), {bot_personality}(人格), {topic}(说说主题), {bot_expression}(表达方式), {current_activity}(当前活动)"),
-            "custom_qqaccount": ConfigField(type=str, default="",
-                                            description="custom模式（/zn custom）：使用与该QQ账号的最新私聊内容作为说说内容（会屏蔽'/'开头的命令）"),
-            "custom_only_mai": ConfigField(type=bool, default=True,
-                                           description="custom模式下使用谁说的内容（true: bot的发言, false: 私聊对象的发言）"),
-            "pic_plugin_model": ConfigField(type=str, default="",
-                                            description="使用麦麦绘卷生图时的模型名称（对应麦麦绘卷配置中的模型key，留空则不生成AI图片）"),
-        },
-        "read": {
-            "permission": ConfigField(type=list, default=['114514', '1919810'],
-                                      description="权限QQ号列表（控制读说说Action的权限）"),
-            "permission_type": ConfigField(type=str, default='blacklist',
-                                           description="权限模式: whitelist(仅列表中有权限) / blacklist(仅列表中无权限)"),
-            "read_number": ConfigField(type=int, default=5, description="一次读取最新的几条说说"),
-            "like_possibility": ConfigField(type=float, default=1.0, description="读说说后点赞的概率（0-1）"),
-            "comment_possibility": ConfigField(type=float, default=1.0, description="读说说后评论的概率（0-1）"),
-            "prompt": ConfigField(type=str,
-                                  default="你是'{bot_personality}'，你正在浏览你好友'{target_name}'的QQ空间，你看到了你的好友'{target_name}'"
-                                          "在qq空间上在'{created_time}'发了一条内容是'{content}'的说说，你想要发表你的一条评论，现在是'{current_time}'"
-                                          "你对'{target_name}'的印象是'{impression}'，若与你的印象点相关，可以适当评论相关内容，无关则忽略此印象，"
-                                          "{bot_expression}，回复的平淡一些，简短一些，说中文，不要刻意突出自身学科背景，不要浮夸，不要夸张修辞，不要输出多余内容"
-                                          "(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )。只输出回复内容",
-                                  description="对普通说说进行评论的提示词，可用占位符: {current_time}, {bot_personality}, {target_name}(说说主人名称), "
-                                              "{created_time}(发布时间), {content}(说说内容), {impression}(印象点), {bot_expression}"),
-            "rt_prompt": ConfigField(type=str,
-                                     default="你是'{bot_personality}'，你正在浏览你好友'{target_name}'的QQ空间，你看到了你的好友'{target_name}'"
-                                             "在qq空间上在'{created_time}'转发了一条内容为'{rt_con}'的说说，你的好友的评论为'{content}'，你对'{"
-                                             "target_name}'的印象是'{impression}'，若与你的印象点相关，可以适当评论相关内容，无关则忽略此印象，"
-                                             "现在是'{current_time}'，你想要发表你的一条评论，{bot_expression}，"
-                                             "回复的平淡一些，简短一些，说中文，不要刻意突出自身学科背景，不要浮夸，不要夸张修辞，"
-                                             "不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )。只输出回复内容",
-                                     description="对转发说说进行评论的提示词，额外占位符: {rt_con}(转发说说内容)，其余同上"),
-        },
-        "monitor": {
-            "read_list": ConfigField(type=list, default=[],
-                                     description="自动阅读名单（QQ号列表，配合 read_list_type 使用）"),
-            "read_list_type": ConfigField(type=str, default="blacklist",
-                                          description="名单类型: whitelist(仅读列表中的) / blacklist(不读列表中的)"),
-            "enable_auto_reply": ConfigField(type=bool, default=False,
-                                             description="是否启用自动回复自己说说下的评论"),
-            "self_readnum": ConfigField(type=int, default=5,
-                                        description="需要检查评论的自己最新说说数量"),
-            "silent_hours": ConfigField(type=str, default="22:00-07:00",
-                                        description="不刷空间的时间段（24小时制，格式 \"HH:MM-HH:MM\"，多段用逗号分隔）"),
-            "like_during_silent": ConfigField(type=bool, default=False,
-                                              description="静默时间段内是否仍然点赞"),
-            "comment_during_silent": ConfigField(type=bool, default=False,
-                                                 description="静默时间段内是否仍然评论"),
-            "like_possibility": ConfigField(type=float, default=1.0,
-                                            description="刷空间时点赞的概率（0-1）"),
-            "comment_possibility": ConfigField(type=float, default=1.0,
-                                               description="刷空间时评论的概率（0-1）"),
-            "processed_comments_cache_size": ConfigField(type=int, default=100,
-                                                        description="已处理评论缓存上限（防止内存无限增长，超出后丢弃最早的记录）"),
-            "processed_feeds_cache_size": ConfigField(type=int, default=100,
-                                                      description="已处理说说缓存上限（防止内存无限增长，超出后丢弃最早的记录）"),
-            "reply_prompt": ConfigField(type=str,
-                                        default="你是'{bot_personality}'，你的好友'{nickname}'在'{created_time}'评论了你QQ空间上的一条内容为"
-                                                "'{content}'的说说，你的好友对该说说的评论为:'{comment_content}'，"
-                                                "现在是'{current_time}'，你想要对此评论进行回复，你对该好友的印象是:"
-                                                "'{impression}'，若与你的印象点相关，可以适当回复相关内容，无关则忽略此印象，"
-                                                "{bot_expression}，回复的平淡一些，简短一些，说中文，不要刻意突出自身学科背景，不要浮夸，不要夸张修辞，"
-                                                "不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )。只输出回复内容",
-                                        description="自动回复评论的提示词，可用占位符: {current_time}, {bot_personality}, {nickname}(评论者昵称), "
-                                                    "{created_time}(评论时间), {content}(说说内容), {comment_content}(评论内容), {impression}(印象点), {bot_expression}"),
-            "reply_to_reply_prompt": ConfigField(type=str,
-                                        default="你是'{bot_personality}'，你之前在好友的QQ空间评论了一条内容为'{content}'的说说，"
-                                                "你的评论为'{bot_comment}'，现在'{nickname}'在'{created_time}'回复了你的评论，"
-                                                "回复内容为'{reply_content}'，现在是'{current_time}'，你想要对此回复进行回复，"
-                                                "你对'{nickname}'的印象是'{impression}'，若与你的印象点相关，可以适当回复相关内容，"
-                                                "无关则忽略此印象，{bot_expression}，回复的平淡一些，简短一些，说中文，"
-                                                "不要刻意突出自身学科背景，不要浮夸，不要夸张修辞，"
-                                                "不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )。只输出回复内容",
-                                        description="回复他人空间中对bot评论的回复的提示词，"
-                                                    "可用占位符: {current_time}, {bot_personality}, {nickname}(回复者昵称), "
-                                                    "{created_time}(回复时间), {content}(原说说内容), {bot_comment}(bot的原始评论), "
-                                                    "{reply_content}(对方的回复内容), {impression}(印象点), {bot_expression}"),
-        },
-        "routine": {
-            "check_interval_minutes": ConfigField(type=int, default=20,
-                                                   description="检查间隔（分钟），每次读取日程并由 LLM 决策是否行动"),
-            "post_cooldown_minutes": ConfigField(type=int, default=120,
-                                                  description="两次发说说的最短间隔（分钟），冷却期内跳过 LLM 决策"),
-            "browse_cooldown_minutes": ConfigField(type=int, default=40,
-                                                    description="两次刷空间的最短间隔（分钟），冷却期内跳过 LLM 决策"),
-        },
-        "models": {
-            "text_model": ConfigField(type=str, default="replyer",
-                                      description="生成文本的模型（从MaiBot的model_config读取），默认 replyer 即可"),
-            "image_prompt": ConfigField(type=str,
-                                        default="请根据以下QQ空间说说内容配图，并构建生成配图的风格和prompt。说说主人信息：'{personality}'。说说内容:'{"
-                                                "message}'。请注意：仅回复用于生成图片的prompt，不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )",
-                                        description="图片生成提示词（当麦麦绘卷的PromptOptimizer不可用时作为备选），"
-                                                    "可用占位符: {personality}(说说主人信息), {message}(说说内容), {current_time}(当前时间)"),
-            "clear_image": ConfigField(type=bool, default=True, description="是否在上传后清理生成的图片文件"),
-            "show_prompt": ConfigField(type=bool, default=False, description="是否在日志中显示生成的prompt内容（调试用）"),
-        },
-        "diary": {
-            "enabled": ConfigField(type=bool, default=False,
-                                   description="是否启用日记功能（启用后会在指定时间自动生成日记）"),
-            "schedule_time": ConfigField(type=str, default="23:30",
-                                         description="每日自动生成日记的时间（HH:MM格式）"),
-            "style": ConfigField(type=str, default="diary",
-                                 description="日记风格: diary(日记体) / qqzone(说说体) / custom(自定义prompt)"),
-            "min_message_count": ConfigField(type=int, default=3,
-                                             description="生成日记所需的最少消息数量（不够则跳过）"),
-            "min_word_count": ConfigField(type=int, default=250,
-                                          description="日记最少字数"),
-            "max_word_count": ConfigField(type=int, default=350,
-                                          description="日记最多字数"),
-            "filter_mode": ConfigField(type=str, default="all",
-                                       description="消息过滤模式: all(所有群聊) / whitelist(仅target_chats中的) / blacklist(排除target_chats中的)"),
-            "target_chats": ConfigField(type=str, default="",
-                                        description="目标聊天列表，每行一个，格式: group:群号 或 private:QQ号"),
-            "custom_prompt": ConfigField(type=str, default="",
-                                         description="自定义日记prompt模板（style 为 custom 时生效），可用占位符: {date}, {timeline}, {date_with_weather}, "
-                                                     "{target_length}, {personality_desc}, {style}, {name}"),
-        },
-        "diary.model": {
-            "use_custom_model": ConfigField(type=bool, default=False,
-                                            description="是否使用自定义模型（否则使用MaiBot默认replyer模型）"),
-            "api_url": ConfigField(type=str, default="https://api.siliconflow.cn/v1",
-                                   description="自定义模型API地址"),
-            "api_key": ConfigField(type=str, default="",
-                                   description="自定义模型API密钥"),
-            "model_name": ConfigField(type=str, default="Pro/deepseek-ai/DeepSeek-V3",
-                                      description="自定义模型名称"),
-            "temperature": ConfigField(type=float, default=0.7,
-                                       description="生成温度（0-2）"),
-            "api_timeout": ConfigField(type=int, default=300,
-                                       description="API请求超时时间（秒）"),
-        },
-    }
+    # 类型注解（实际属性在 __init__ 中初始化）
+    _routine: Optional[Any]
+    _migrated_data: bool
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.routine_runner = None
+    def __init__(self) -> None:
+        super().__init__()
+        self._routine = None
+        self._migrated_data = False
 
-        if self.get_config("plugin.enable", True):
-            self.enable_plugin = True
-            self.routine_runner = RoutineRunner(self)
-            asyncio.create_task(self._start_routine_after_delay())
-        else:
-            self.enable_plugin = False
+    # ===== 生命周期 =====
 
-    async def _start_routine_after_delay(self):
-        """延迟启动 routine 模式"""
+    async def on_load(self) -> None:
+        if not self.config.plugin.enabled:
+            self.ctx.logger.info("MaiTrace 已禁用（plugin.enabled=false）")
+            return
+
+        # 迁移旧路径数据（一次性）
+        await self._migrate_legacy_data()
+
+        # 启动 Routine（延迟 10s 等其他插件就绪）
+        try:
+            from .services.routine import RoutineRunner
+            self._routine = RoutineRunner(self)
+            asyncio.create_task(self._delayed_start_routine())
+        except ImportError as exc:
+            self.ctx.logger.warning("RoutineRunner 未就绪，跳过日程驱动: %s", exc)
+
+        self.ctx.logger.info("MaiTrace v3 已加载")
+
+    async def _delayed_start_routine(self) -> None:
         await asyncio.sleep(10)
-        if self.routine_runner:
-            await self.routine_runner.start()
+        if self._routine is not None:
+            try:
+                await self._routine.start()
+            except Exception as exc:
+                self.ctx.logger.error("启动 Routine 失败: %s", exc, exc_info=True)
 
-    def get_plugin_components(self) -> list[tuple[ComponentInfo, Type]]:
-        return [
-            (MaizoneCommand.get_command_info(), MaizoneCommand),
-            (SendFeedAction.get_action_info(), SendFeedAction),
-            (ReadFeedAction.get_action_info(), ReadFeedAction),
+    async def on_unload(self) -> None:
+        if self._routine is not None:
+            with contextlib.suppress(Exception):
+                await self._routine.stop()
+        self.ctx.logger.info("MaiTrace 已卸载")
+
+    async def on_config_update(
+        self,
+        scope: str,
+        config_data: dict[str, Any],
+        version: str,
+    ) -> None:
+        """配置热重载：仅记录，运行时配置由 services 在调用时实时读取。"""
+        del config_data
+        self.ctx.logger.info("MaiTrace 配置更新: scope=%s version=%s", scope, version)
+
+    # ===== 数据迁移（一次性） =====
+
+    async def _migrate_legacy_data(self) -> None:
+        """把旧的 processed_list / cookies / qrcode 文件搬到 data/ 下。"""
+        if self._migrated_data:
+            return
+        import os
+        import shutil
+
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.join(plugin_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+
+        moves = [
+            (os.path.join(plugin_dir, "processed_list.json"), os.path.join(data_dir, "processed_list.json")),
+            (os.path.join(plugin_dir, "processed_comments.json"), os.path.join(data_dir, "processed_comments.json")),
         ]
+        # cookies-*.json 在 qzone/ 下
+        qzone_dir = os.path.join(plugin_dir, "qzone")
+        if os.path.isdir(qzone_dir):
+            for fname in os.listdir(qzone_dir):
+                if fname.startswith("cookies-") and fname.endswith(".json"):
+                    moves.append((os.path.join(qzone_dir, fname), os.path.join(data_dir, fname)))
+                elif fname == "qrcode.png":
+                    moves.append((os.path.join(qzone_dir, fname), os.path.join(data_dir, fname)))
+
+        for src, dst in moves:
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    shutil.move(src, dst)
+                    self.ctx.logger.info("迁移数据文件: %s → %s", src, dst)
+                except Exception as exc:
+                    self.ctx.logger.warning("迁移 %s 失败: %s", src, exc)
+
+        self._migrated_data = True
+
+    # ===== Command / Action / Tool 组件（具体逻辑分发到 handlers/） =====
+
+    @Command(
+        "zn",
+        description="MaiTrace 统一命令：/zn help 查看用法",
+        pattern=r"^\s*/zn(?:\s+(?P<sub>.+))?\s*$",
+    )
+    async def handle_zn(self, **kwargs: Any) -> tuple:
+        from .handlers.commands import dispatch_zn
+        return await dispatch_zn(self, **kwargs)
+
+    @Action(
+        "send_feed",
+        description="发一条相应主题的说说（包含图片，自带回复）",
+        activation_type=ActivationType.KEYWORD,
+        activation_keywords=["说说", "空间", "动态"],
+        action_parameters={
+            "topic": "要发送的说说主题或完整内容",
+            "user_name": "要求你发说说的好友的 QQ 名称",
+        },
+        action_require=[
+            "用户要求发说说时使用",
+            "当有人希望你更新 QQ 空间时使用",
+            "当你认为适合发说说时使用",
+        ],
+        associated_types=["text"],
+    )
+    async def handle_send_feed(self, **kwargs: Any) -> tuple:
+        from .handlers.actions import execute_send_feed
+        return await execute_send_feed(self, **kwargs)
+
+    @Action(
+        "read_feed",
+        description="读取好友最近的动态/说说并评论点赞（自带回复）",
+        activation_type=ActivationType.KEYWORD,
+        activation_keywords=["说说", "空间", "动态"],
+        action_parameters={
+            "target_name": "需要阅读动态的好友的 QQ 名称",
+            "user_name": "要求你阅读动态的好友的 QQ 名称",
+        },
+        action_require=[
+            "需要阅读某人动态/说说/QQ空间时使用",
+            "当有人希望你评价某人的动态/说说/QQ空间",
+            "当你认为适合阅读说说时使用",
+        ],
+        associated_types=["text"],
+    )
+    async def handle_read_feed(self, **kwargs: Any) -> tuple:
+        from .handlers.actions import execute_read_feed
+        return await execute_read_feed(self, **kwargs)
+
+    @API(
+        "send_feed_api",
+        description="发送一条说说到 QQ 空间。参数：message(str, 必填)、images(list[bytes], 可选)。",
+        version="1",
+        public=True,
+    )
+    async def handle_send_feed_api(
+        self,
+        message: str = "",
+        images: Optional[list[bytes]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        del kwargs
+        from .handlers.apis import send_feed_api
+        return await send_feed_api(self, message=message, images=images)
+
+    @API(
+        "get_feeds_list_api",
+        description="获取指定 QQ 的最近说说列表。参数：target_qq(str, 必填)、num(int, 默认5)。",
+        version="1",
+        public=True,
+    )
+    async def handle_get_feeds_list_api(
+        self,
+        target_qq: str = "",
+        num: int = 5,
+        **kwargs: Any,
+    ) -> dict:
+        del kwargs
+        from .handlers.apis import get_feeds_list_api
+        return await get_feeds_list_api(self, target_qq=target_qq, num=num)
+
+
+def create_plugin() -> MaiTracePlugin:
+    """工厂函数：Runner 通过此函数实例化插件。"""
+    return MaiTracePlugin()

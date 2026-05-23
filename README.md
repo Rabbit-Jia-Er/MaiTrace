@@ -1,66 +1,74 @@
-# Maizone（麦麦空间）
+# MaiTrace（麦时迹）
 
 MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论点赞、回复评论、写日记！
 
+> **v3.0 起已迁移到新版 MaiBot SDK**（`maibot_sdk` 2.0+）。代码按 services / handlers / utils 三层重构，老版本所有功能保留。从 v2.5 升级请阅读下方"升级指南"。
+
 ## 功能
 
-**发说说** — `/zn <主题>` 或自然语言触发，根据人格和历史说说生成内容，可选 AI 配图
+**发说说** — `/zn <主题>` 或自然语言触发（Action），根据人格和历史说说生成内容，可选 AI 配图
 
 **读说说** — 自然语言触发（"读一下我的QQ空间"），获取好友说说并点赞评论
 
 **自动刷空间** — Routine 模式驱动，自动评论、点赞、回复评论：
 - 评论未读的好友说说
 - 按概率点赞
-- 回复自己说说下的新评论（`enable_auto_reply`）
-- 回复他人空间中对 bot 评论的回复（非静默时段自动生效）
+- 回复自己说说下的新评论（`monitor.enable_auto_reply`）
+- 回复他人空间中对 bot 评论的回复（支持多层链式）
 
 **日记** — 从聊天记录生成日记，手动 `/zn gen` 或定时自动生成
 
-**Routine** — 依赖 autonomous_planning 插件，LLM 决策是否发说说/刷空间
+**Routine** — 依赖 autonomous_planning_plugin 的日程数据，LLM 决策是否发说说/刷空间
+
+**跨插件 API** — 通过 `ctx.api.call("Rabbit-Jia-Er.MaiTrace.send_feed_api", ...)` 让其他插件复用 MaiTrace 的发说说和取列表能力
 
 ## 使用方法
 
 ### 安装插件
 
-1. 使用命令行工具或是 git bash 进入你的麦麦目录
+1. 进入你的麦麦 plugins 目录：
 
    ```shell
    cd MaiBot/plugins
    ```
 
-2. 克隆本仓库
+2. 克隆本仓库：
 
    ```shell
-   git clone https://github.com/Rabbit-Jia-Er/Maizone.git
+   git clone https://github.com/Rabbit-Jia-Er/mai_clinic_plugin.git
    ```
 
-3. 根据部署方式安装相应依赖，示例：
+3. 安装依赖（任选一种）：
 
-   - 一键包安装：在`![[点我启动!!!`后出现的菜单中选择交互式安装pip模块，按模块名依次安装 `httpx`、`Pillow`、`bs4`、`json5`、`openai`
+   - **一键包**：在`![[点我启动!!!`后菜单选择交互式安装 pip，按模块依次装 `httpx`、`Pillow`、`bs4`、`json5`、`openai`
 
-   - docker部署安装：宿主机内
-
+   - **docker**：宿主机内
      ```bash
-     docker exec -it maim-bot-core uv pip install -r plugins/Maizone/requirements.txt --system
+     docker exec -it maim-bot-core uv pip install -r plugins/MaiTrace/requirements.txt --system
      ```
+     （docker-compose.yaml 中按需持久化 python 包）
 
-     您可能需要修改docker-compose.yaml以持久化python包
-
-   - uv安装：在plugins/Maizone文件夹下
-
+   - **uv**：在 plugins/MaiTrace 下
      ```shell
      uv pip install -r ./requirements.txt -i https://mirrors.aliyun.com/pypi/simple --upgrade
      ```
 
-   - pip安装：在MaiBot文件夹下
-
+   - **pip**：在 MaiBot 文件夹下
      ```shell
      .\venv\Scripts\activate
-     cd .\plugins\Maizone\
+     cd .\plugins\MaiTrace\
      pip install -i https://mirrors.aliyun.com/pypi/simple -r .\requirements.txt --upgrade
      ```
 
-4. 启动 MaiBot，插件目录下自动生成 `config.toml`，按注释填写配置后重启即可（未生成配置文件请检查启动麦麦时的加载插件日志）
+4. 启动 MaiBot，插件目录下会自动生成 `config.toml`，按注释填写后重启即可。
+
+## 从 v2.5 升级到 v3.0（重要）
+
+1. **配置段改名**：原 `[diary.model]` 段必须改成 `[diary_model]`（Pydantic v2 保留字冲突）。
+   - 推荐做法：备份旧 `config.toml` → 删除 `config.toml` → 重启 MaiBot 让插件重新生成 → 把旧文件里 `[diary.model]` 段的内容粘到新文件的 `[diary_model]` 段下。
+2. **数据文件迁移**：旧版 `processed_list.json` / `qzone/cookies-<uin>.json` / `qzone/qrcode.png` 在新版会自动迁移到 `data/` 下（插件加载时一次性 move）。无需手动操作。
+3. **新增 adapter Cookie 方式**：`plugin.cookie_methods` 默认列表新增了 `"adapter"`（通过 napcat-adapter 插件 API 取 cookie，无需配置 Napcat HTTP 端口），推荐放在首位。
+4. **命令、配置项名称、Prompt 模板全部保持不变**，旧版用户体验无变化。
 
 ## 命令与触发
 
@@ -76,6 +84,7 @@ MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论
 | `/zn gen [日期]` | 生成日记（默认今天） | send 权限 |
 | `/zn ls` | 查看日记列表和统计 | send 权限 |
 | `/zn v [日期] [编号]` | 查看日记 | 所有人 |
+| `/zn <日期>` | 等价于 `/zn v <日期>` | 所有人 |
 
 日期格式支持：`YYYY-MM-DD`、`YYYY/MM/DD`、`YYYY.MM.DD`、`今天`、`昨天`、`前天`
 
@@ -90,7 +99,7 @@ MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论
 
 ### 自动行为
 
-以下行为由 Routine 模式自动执行，无需手动触发：
+以下行为由 Routine 模式自动执行：
 
 | 行为 | 说明 | 控制配置 |
 |------|------|----------|
@@ -99,112 +108,55 @@ MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论
 | 自动回复他人空间中对 bot 评论的回复 | 有人回复了 bot 的评论时自动回复 | 非静默时段自动生效 |
 | 自动生成日记 | 到达设定时间自动生成 | `diary.enabled` + `diary.schedule_time` |
 
+## 跨插件 API
+
+其他插件可以这样调用 MaiTrace：
+
+```python
+# 发说说
+result = await ctx.api.call(
+    "Rabbit-Jia-Er.MaiTrace.send_feed_api",
+    params={"message": "hello world", "images": []},
+)
+# → {"result": True, "message": "说说发送成功，tid=..."}
+
+# 取说说列表
+result = await ctx.api.call(
+    "Rabbit-Jia-Er.MaiTrace.get_feeds_list_api",
+    params={"target_qq": "10001", "num": 5},
+)
+# → {"result": True, "message": "成功获取 5 条说说", "data": [...]}
+```
+
 ## 配置
 
 ### `[plugin]`
 
 | 项 | 默认值 | 说明 |
 |----|--------|------|
-| `enable` | `true` | 启用插件 |
+| `enabled` | `true` | 启用插件 |
 | `http_host` | `"127.0.0.1"` | Napcat 地址 |
 | `http_port` | `"9999"` | Napcat 端口 |
 | `napcat_token` | `""` | Napcat Token |
-| `cookie_methods` | `["napcat", "clientkey", "qrcode", "local"]` | Cookie 获取方式，按顺序尝试 |
-> 为了您的安全，请设置Token。操作方法：在设置http服务器时面板最下方的Token栏中填入密码，在生成的config.toml文件中填写该密码
+| `cookie_methods` | `["adapter", "napcat", "clientkey", "qrcode", "local"]` | Cookie 获取方式，按顺序尝试 |
 
 | 方式 | 说明 |
 |------|------|
-| `napcat` | 通过Napcat HTTP接口获取（推荐） |
-| `clientkey` | 通过本机QQ客户端获取（需QQ在同一机器上） |
-| `qrcode` | 扫描插件目录下的二维码登录（有效期约一天） |
-| `local` | 读取已保存的cookie文件（[如何获取QQ空间cookie？](https://www.xjr7670.com/articles/how-to-get-qzone-cookie.html)） |
+| `adapter` | 通过 napcat-adapter 插件 API 取（**v3 新增、推荐**） |
+| `napcat` | 通过 Napcat HTTP 接口取 |
+| `clientkey` | 通过本机 QQ 客户端取（需 QQ 在同一机器） |
+| `qrcode` | 扫描插件目录下的二维码登录（有效期约 1 天） |
+| `local` | 读取 `data/cookies-<uin>.json` 缓存 |
 
-### `[send]`
+### `[send]` / `[read]` / `[monitor]` / `[routine]` / `[models]`
 
-`/zn`、Action、Routine 共用。权限同时控制日记命令。
+字段与 v2.5 完全一致，详见生成的 config.toml 里的注释。
 
-| 项 | 默认值 | 说明 |
-|----|--------|------|
-| `permission` | `["114514", "1919810", "1523640161"]` | 权限 QQ 号 |
-| `permission_type` | `"whitelist"` | `whitelist` / `blacklist` |
-| `enable_image` | `false` | 启用配图 |
-| `image_mode` | `"random"` | `only_ai` / `only_emoji` / `random` |
-| `ai_probability` | `0.5` | AI 配图概率 |
-| `image_number` | `1` | 图片数量 1-4 |
-| `history_number` | `5` | 参考历史说说数量 |
-| `prompt` | *见配置文件* | 提示词。占位符：`{current_time}` `{bot_personality}` `{topic}` `{bot_expression}` `{current_activity}` |
-| `custom_qqaccount` | `""` | custom 模式私聊 QQ |
-| `custom_only_mai` | `true` | custom 模式用 bot 发言 |
-| `pic_plugin_model` | `""` | 麦麦绘卷模型 key |
+### `[diary]` / `[diary_model]`
 
-### `[read]`
+> **v3 改动**：原 `[diary.model]` 段改名为 `[diary_model]`。
 
-Action 和刷空间评论共用。
-
-| 项 | 默认值 | 说明 |
-|----|--------|------|
-| `permission` | `["114514", "1919810"]` | 权限 QQ 号 |
-| `permission_type` | `"blacklist"` | `whitelist` / `blacklist` |
-| `read_number` | `5` | 读取说说数量 |
-| `like_possibility` | `1.0` | 点赞概率 |
-| `comment_possibility` | `1.0` | 评论概率 |
-| `prompt` | *见配置文件* | 评论提示词。占位符：`{current_time}` `{bot_personality}` `{target_name}` `{created_time}` `{content}` `{impression}` `{bot_expression}` |
-| `rt_prompt` | *见配置文件* | 转发说说评论提示词。额外：`{rt_con}` |
-
-### `[monitor]`
-
-| 项 | 默认值 | 说明 |
-|----|--------|------|
-| `read_list` | `[]` | 自动阅读名单 |
-| `read_list_type` | `"blacklist"` | `whitelist` / `blacklist` |
-| `enable_auto_reply` | `false` | 回复自己说说下的评论 |
-| `self_readnum` | `5` | 检查自己最新说说数量 |
-| `silent_hours` | `"22:00-07:00"` | 静默时段 |
-| `like_during_silent` | `false` | 静默期允许点赞 |
-| `comment_during_silent` | `false` | 静默期允许评论 |
-| `like_possibility` | `1.0` | 点赞概率 |
-| `comment_possibility` | `1.0` | 评论概率 |
-| `processed_comments_cache_size` | `100` | 已处理评论缓存上限 |
-| `processed_feeds_cache_size` | `100` | 已处理说说缓存上限 |
-| `reply_prompt` | *见配置文件* | 回复评论提示词。占位符：`{current_time}` `{bot_personality}` `{nickname}` `{created_time}` `{content}` `{comment_content}` `{impression}` `{bot_expression}` |
-| `reply_to_reply_prompt` | *见配置文件* | 回复他人空间中对 bot 评论的回复。占位符：`{current_time}` `{bot_personality}` `{nickname}` `{created_time}` `{content}` `{bot_comment}` `{reply_content}` `{impression}` `{bot_expression}` |
-
-### `[routine]`
-
-依赖 autonomous_planning 插件。
-
-| 项 | 默认值 | 说明 |
-|----|--------|------|
-| `check_interval_minutes` | `20` | 检查间隔（分钟） |
-| `post_cooldown_minutes` | `120` | 发说说冷却（分钟） |
-| `browse_cooldown_minutes` | `40` | 刷空间冷却（分钟） |
-
-### `[models]`
-
-| 项 | 默认值 | 说明 |
-|----|--------|------|
-| `text_model` | `"replyer"` | 文本模型 |
-| `image_prompt` | *见配置文件* | 图片提示词备选 |
-| `clear_image` | `true` | 上传后清理图片 |
-| `show_prompt` | `false` | 日志显示 prompt |
-
-### `[diary]`
-
-权限复用 `[send]`。
-
-| 项 | 默认值 | 说明 |
-|----|--------|------|
-| `enabled` | `false` | 启用自动日记 |
-| `schedule_time` | `"23:30"` | 自动生成时间 |
-| `style` | `"diary"` | `diary` / `qqzone` / `custom` |
-| `min_message_count` | `3` | 最少消息数 |
-| `min_word_count` | `250` | 最少字数 |
-| `max_word_count` | `350` | 最多字数 |
-| `filter_mode` | `"all"` | `all` / `whitelist` / `blacklist` |
-| `target_chats` | `""` | 每行一个 `group:群号` 或 `private:QQ号` |
-| `custom_prompt` | `""` | 自定义模板 |
-
-### `[diary.model]`
+`[diary]` 字段与 v2.5 完全一致。`[diary_model]`：
 
 | 项 | 默认值 | 说明 |
 |----|--------|------|
@@ -215,11 +167,49 @@ Action 和刷空间评论共用。
 | `temperature` | `0.7` | 温度 |
 | `api_timeout` | `300` | 超时（秒） |
 
+## 目录结构（v3）
+
+```
+plugins/MaiTrace/
+├── _manifest.json
+├── plugin.py                # MaiBotPlugin 入口（生命周期 + @Command/@Action/@API）
+├── config.py                # PluginConfigBase × 8 sections
+├── requirements.txt
+├── data/                    # 运行时数据（cookies/processed_list/diaries 等）
+├── images/                  # 生图缓存
+├── services/                # 业务层（无 SDK 装饰器）
+│   ├── cookie.py            # 5 种 cookie 获取方式
+│   ├── qzone_api.py         # QzoneAPI HTTP 客户端
+│   ├── feed_publish.py      # 发说说（含 custom 模式 / AI 配图 / 表情包）
+│   ├── feed_read.py         # 读说说 + 点赞/评论包装
+│   ├── feed_image.py        # 麦麦绘卷桥接 + emoji
+│   ├── monitor.py           # 刷空间 + 回复评论（含多层链式）
+│   ├── routine.py           # autonomous_planning 日程驱动 + LLM 决策
+│   ├── persistence.py       # processed_list / cookies 持久化
+│   ├── permission.py        # 白/黑名单
+│   ├── prompts.py           # prompt 构建
+│   ├── llm_runner.py        # ctx.llm.generate 包装
+│   └── diary/
+│       ├── pipeline.py      # 日记编排（取消息→时间线→prompt→LLM→落库→发布）
+│       ├── storage.py
+│       ├── timeline.py      # 含天气推断/图片检测
+│       ├── prompts.py       # diary/qqzone/custom 三种模板
+│       └── fetcher.py       # ctx.message + 黑/白名单
+├── handlers/                # 表现层
+│   ├── commands.py          # /zn 子命令分发
+│   ├── actions.py           # SendFeed / ReadFeed Action
+│   └── apis.py              # 跨插件 @API 实现
+└── utils/
+    ├── _envelope.py         # 处理 ctx 返回的 success/error 信封
+    ├── date.py              # parse_date / format_date_str
+    ├── time_window.py       # 静默时段
+    └── tokens.py            # token 估算 / 智能截断
+```
+
 ## 贡献和反馈
 
-- **制作者水平有限，任何漏洞、疑问或建议,欢迎提交 Issue 和 Pull Request！**
-- **或联系QQ：1523640161,3082618311**
-- **其余问题请联系作者修复或解决（部分好友请求可能被过滤导致回复不及时，请见谅）**
+- **任何漏洞、疑问或建议欢迎提交 Issue 和 Pull Request**
+- **联系 QQ：1523640161 / 3082618311**
 
 ---
 
@@ -227,8 +217,6 @@ Action 和刷空间评论共用。
 
 [MaiBot](https://github.com/MaiM-with-u/MaiBot)
 
-部分代码来自仓库：[qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit)
+部分代码参考：[qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit)、[diary_plugin](https://github.com/bockegai/diary_plugin)、[MaiTrace v3 独立版](https://github.com/Rabbit-Jia-Er/mai_clinic_plugin)
 
-感谢[xc94188](https://github.com/xc94188)、[myxxr](https://github.com/myxxr)、[UnCLAS-Prommer](https://github.com/UnCLAS-Prommer)、[XXXxx7258](https://github.com/XXXxx7258)、[heitiehu-beep](https://github.com/heitiehu-beep)提供的功能改进
-
-魔改版麦麦，集成了魔改版插件[MoFox_Bot](https://github.com/MoFox-Studio/MoFox_Bot)
+感谢 [xc94188](https://github.com/xc94188)、[myxxr](https://github.com/myxxr)、[UnCLAS-Prommer](https://github.com/UnCLAS-Prommer)、[XXXxx7258](https://github.com/XXXxx7258)、[heitiehu-beep](https://github.com/heitiehu-beep) 提供的功能改进。
