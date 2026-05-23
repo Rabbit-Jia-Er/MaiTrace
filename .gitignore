@@ -1,11 +1,13 @@
 # Python
 __pycache__/
+config_back/
 *.py[cod]
 *$py.class
 
 # Config & Data Files
 test*
-config.*
+config.toml
+requirements.txt
 processed_list.json
 processed_comments.json
 cookies-*.json
@@ -16,5 +18,4 @@ data/
 
 # IDE & Tools
 .claude/
-README--1.md
 nul
