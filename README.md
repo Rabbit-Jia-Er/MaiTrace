@@ -45,7 +45,7 @@ MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论
 
 ### 从 v3.0 → v3.1+
 
-完全向后兼容，但有以下行为变化：
+完全向后兼容（除一项命令权限**破坏性变更**，见下文），但有以下行为变化：
 
 1. **`@Action` → `@Tool`**：旧 `send_feed` / `read_feed` Action 已迁移为 SDK 2.x 的 `@Tool`。功能等价，由 LLM 在 tool calling 时自主选择。
 2. **`[persona]` 新增段**：含 `self_description` / `use_art_selfie_prompt` / `use_multiple_reply_style`，默认值不破坏旧行为。
@@ -53,23 +53,27 @@ MaiBot 的 QQ 空间插件。让你的麦麦发说说、刷空间、自动评论
 4. **活动黑名单默认开启**：`routine.post_blocked_activities` / `browse_blocked_activities` 默认含 `sleeping / working / studying / eating / exercising`，命中直接拒、不调 LLM。要全部交给 LLM 决策请清空数组。
 5. **timeline 单条消息截断**：原硬编码 50 字 → `diary.per_message_max_chars`（默认 200，可设 0-2000；0=不截断）。
 6. **Routine 不再直读 sqlite**：改用 `ctx.api.call("xuqian13.autonomous-planning-plugin-v4.get_current_activity")`，需安装 v4 规划插件。
+7. **⚠️ v3.1.2 命令权限破坏性变更**：所有 `/zn` 命令（含原本任何人能用的 `help` / `v [日期]` / `<日期>`）现在统一要求调用者在 `[plugin].admin_qq` 列表中。空列表 = 所有 `/zn` 都被拒。**升级后必须先在 config.toml 填 `admin_qq`**，否则命令全不能用。注意这与原 `[send].permission`（控制 `@Tool` 触发）是两套独立的权限。
 
 ## 命令
 
-所有命令统一 `/zn` 前缀：
+所有命令统一 `/zn` 前缀，**全部要求调用者在 `[plugin].admin_qq` 列表中**（v3.1.2+）：
 
-| 命令 | 说明 | 权限 |
-|---|---|---|
-| `/zn help` | 帮助 | 所有人 |
-| `/zn <主题>` | 发一条指定主题的说说 | `[send].permission` |
-| `/zn custom` | 用 `send.custom_qqaccount` 的最新私聊内容发说说 | send |
-| `/zn gen [日期]` | 生成日记（默认今天，含定时同款发布到空间） | send |
-| `/zn ls` | 日记列表 + 统计 | send |
-| `/zn v [日期] [编号]` | 查看日记 | 所有人 |
-| `/zn <日期>` | 等价 `/zn v <日期>` | 所有人 |
-| `/zn debug routine` | 查看 Routine 最近 N 次决策（含拒绝原因） | send |
-| `/zn debug cookie` | 查看 Cookie 当前状态 + 各方式成功率 | send |
-| `/zn debug msgs [日期]` | 查看某日消息读取统计 | send |
+| 命令 | 说明 |
+|---|---|
+| `/zn help` | 帮助 |
+| `/zn <主题>` | 发一条指定主题的说说 |
+| `/zn custom` | 用 `send.custom_qqaccount` 的最新私聊内容发说说 |
+| `/zn gen [日期]` | 生成日记（默认今天，含发布到空间） |
+| `/zn ls` | 日记列表 + 统计 |
+| `/zn v [日期] [编号]` | 查看日记 |
+| `/zn <日期>` | 等价 `/zn v <日期>` |
+| `/zn debug routine` | 查看 Routine 最近 N 次决策（含拒绝原因） |
+| `/zn debug cookie` | 查看 Cookie 当前状态 + 各方式成功率 |
+| `/zn debug msgs [日期]` | 查看某日消息读取统计 |
+
+> `[plugin].admin_qq` 为空时所有 `/zn` 都会被拒绝并提示"未配置管理员"。
+> 注意这是**命令权限**，与控制 `@Tool` 触发的 `[send].permission` / `[read].permission` **互相独立**。
 
 日期格式：`YYYY-MM-DD` / `YYYY/MM/DD` / `YYYY.MM.DD` / `今天` / `昨天` / `前天`
 
@@ -121,6 +125,7 @@ await ctx.api.call(
 | `http_host` / `http_port` | `127.0.0.1` / `9999` | Napcat 地址 |
 | `napcat_token` | `""` | Napcat HTTP token |
 | `cookie_methods` | `[adapter, napcat, clientkey, qrcode, local]` | Cookie 获取顺序；v3.1 起按近期成功率自动重排 |
+| `admin_qq` ⭐v3.1.2 | `[]` | 命令管理员；空列表 = 所有 /zn 被拒；与 send/read.permission 独立 |
 
 Cookie 方式：
 

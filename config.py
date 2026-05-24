@@ -124,6 +124,21 @@ class PluginSection(PluginConfigBase):
             "order": 20,
         },
     )
+    admin_qq: List[str] = Field(
+        default_factory=list,
+        description=(
+            "管理员 QQ 列表。**所有** /zn 命令（help / 主题 / custom / gen / ls / v / debug / "
+            "<日期>）都要求调用者的 QQ 在此列表中。空列表 = 禁用所有命令。"
+            "注意：这是命令权限，与 [send].permission / [read].permission（控制 @Tool 触发）独立。"
+        ),
+        json_schema_extra={
+            "label": "管理员 QQ",
+            "hint": '纯数字 QQ 号，例 ["123456"]。所有 /zn 命令都要求在此列表',
+            "item_type": "string",
+            "placeholder": '["123456"]',
+            "order": 30,
+        },
+    )
 
 
 class SendSection(PluginConfigBase):

@@ -798,6 +798,80 @@ async def test_check_diary_time_window():
 # ============================================================
 
 
+async def test_admin_check():
+    """/zn 命令全局管理员检查：非 admin 一律拒绝，admin 全部放行。"""
+    p = _make_plugin()
+    from MaiTrace.handlers.commands import dispatch_zn
+
+    # 1. admin_qq 为空 → 所有人都拒
+    p.config.plugin.admin_qq = []
+    p.ctx.send.sent.clear()
+    ok, msg, _ = await dispatch_zn(
+        p, matched_groups={"sub": "help"}, stream_id="s1", user_id="100",
+    )
+    assert ok is False and msg == "no admin"
+    assert p.ctx.send.sent and "未配置管理员" in p.ctx.send.sent[-1]["text"]
+
+    # 2. 配了 admin 但调用者不在列表 → 拒
+    p.config.plugin.admin_qq = ["123456"]
+    p.ctx.send.sent.clear()
+    ok, msg, _ = await dispatch_zn(
+        p, matched_groups={"sub": "debug help"}, stream_id="s1", user_id="999",
+    )
+    assert ok is False and msg == "no admin"
+    assert "仅管理员可用" in p.ctx.send.sent[-1]["text"]
+
+    # 3. 调用者在 admin 列表 → 通过（help 路径）
+    p.ctx.send.sent.clear()
+    ok, msg, _ = await dispatch_zn(
+        p, matched_groups={"sub": "help"}, stream_id="s1", user_id="123456",
+    )
+    assert ok is True and msg == "ok"
+    # help 文本应已发出
+    assert any("/zn <主题>" in m["text"] for m in p.ctx.send.sent)
+
+    # 4. 之前公开的 /zn v 现在也要 admin（关键：旧版任何人都能用）
+    p.config.plugin.admin_qq = ["123456"]
+    p.ctx.send.sent.clear()
+    ok, msg, _ = await dispatch_zn(
+        p, matched_groups={"sub": "v 2026-05-25"}, stream_id="s1", user_id="999",
+    )
+    assert ok is False and msg == "no admin"
+
+    # 5. 不带子命令（"" 进入 help）也要 admin
+    p.ctx.send.sent.clear()
+    ok, msg, _ = await dispatch_zn(
+        p, matched_groups={"sub": ""}, stream_id="s1", user_id="999",
+    )
+    assert ok is False and msg == "no admin"
+
+
+def test_is_admin_function():
+    """services.permission.is_admin 单元测试。"""
+    p = _make_plugin()
+    from MaiTrace.services.permission import is_admin
+
+    # 空列表
+    p.config.plugin.admin_qq = []
+    assert is_admin(p.config, "100") is False
+    assert is_admin(p.config, "") is False
+
+    # 列表内
+    p.config.plugin.admin_qq = ["123", "456"]
+    assert is_admin(p.config, "123") is True
+    assert is_admin(p.config, "456") is True
+    assert is_admin(p.config, "999") is False
+    # 空 qq_account
+    assert is_admin(p.config, "") is False
+    # 数字字符串边界（int 传入应能正确比较）
+    assert is_admin(p.config, 123) is True
+
+
+# ============================================================
+# 测试 21. publish_topic_api 契约：失败 message 不为空
+# ============================================================
+
+
 async def test_publish_topic_api_contract():
     p = _make_plugin()
     # 隔离副作用：mock cookie 流程，避免真实打 napcat HTTP / 扫码登录
@@ -866,6 +940,10 @@ def main():
 
     print("\n[F] 跨插件 API")
     _run("publish_topic_api contract", test_publish_topic_api_contract)
+
+    print("\n[G] 命令权限")
+    _run("is_admin function", test_is_admin_function)
+    _run("admin check covers all /zn subcommands", test_admin_check)
 
     print("\n" + "=" * 60)
     total = len(_passed) + len(_failed)

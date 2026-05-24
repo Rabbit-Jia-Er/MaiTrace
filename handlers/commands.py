@@ -12,7 +12,7 @@ from ..utils import get_logger
 from typing import Any
 
 from ..services.feed_publish import send_feed
-from ..services.permission import check_permission
+from ..services.permission import is_admin
 from ..utils.date import parse_date, today_str
 
 logger = get_logger(__name__)
@@ -33,12 +33,26 @@ _HELP_TEXT = (
 
 
 async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
-    """单一入口，按子命令分发。返回 (success, msg, intercept)。"""
+    """单一入口，按子命令分发。返回 (success, msg, intercept)。
+
+    所有 /zn 子命令统一要求调用者在 ``[plugin].admin_qq`` 列表中。
+    """
     raw = ((kwargs.get("matched_groups") or {}).get("sub") or "").strip()
     stream_id = str(kwargs.get("stream_id", "") or "")
     user_id = str(kwargs.get("user_id", "") or "")
     group_id = str(kwargs.get("group_id", "") or "")
 
+    # ===== 全局管理员检查（覆盖所有子命令：help / 主题 / custom / gen / ls / v / debug / <日期>） =====
+    if not is_admin(plugin.config, user_id):
+        admin_list = list(plugin.config.plugin.admin_qq or [])
+        if not admin_list:
+            msg = "⚠️ /zn 命令未配置管理员（plugin.admin_qq 为空）。请在 config.toml 里填入管理员 QQ。"
+        else:
+            msg = f"⚠️ /zn 命令仅管理员可用，你的 QQ ({user_id}) 不在 plugin.admin_qq 列表"
+        await plugin.ctx.send.text(msg, stream_id)
+        return False, "no admin", True
+
+    # ===== 子命令分发 =====
     if not raw or raw == "help":
         return await _send_help(plugin, stream_id)
 
@@ -48,15 +62,9 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
 
     # ---- 日记子命令 ----
     if cmd in ("gen", "generate"):
-        if not check_permission(plugin.config, user_id, "send"):
-            await plugin.ctx.send.text(f"{user_id} 权限不足", stream_id)
-            return False, "no perm", True
         return await _cmd_diary_gen(plugin, param, stream_id, group_id)
 
     if cmd in ("ls", "list"):
-        if not check_permission(plugin.config, user_id, "send"):
-            await plugin.ctx.send.text(f"{user_id} 权限不足", stream_id)
-            return False, "no perm", True
         return await _cmd_diary_list(plugin, stream_id)
 
     if cmd in ("v", "view"):
@@ -64,16 +72,10 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
 
     # ---- 调试子命令 ----
     if cmd == "debug":
-        if not check_permission(plugin.config, user_id, "send"):
-            await plugin.ctx.send.text(f"{user_id} 权限不足", stream_id)
-            return False, "no perm", True
         return await _cmd_debug(plugin, param, stream_id)
 
     # ---- custom 模式 ----
     if cmd == "custom":
-        if not check_permission(plugin.config, user_id, "send"):
-            await plugin.ctx.send.text(f"{user_id} 权限不足", stream_id)
-            return False, "no perm", True
         return await _cmd_send_custom(plugin, stream_id)
 
     # ---- /zn <日期> 等价 /zn v <日期> ----
@@ -83,9 +85,6 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
         return await _cmd_diary_view(plugin, view_param, stream_id)
 
     # ---- /zn <主题> 发说说 ----
-    if not check_permission(plugin.config, user_id, "send"):
-        await plugin.ctx.send.text(f"{user_id} 权限不足", stream_id)
-        return False, "no perm", True
     return await _cmd_send_with_topic(plugin, raw, stream_id)
 
 
