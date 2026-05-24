@@ -158,6 +158,32 @@ class MockEmojiCap:
         return {"base64": FAKE_B64}
 
 
+class MockLLMCap:
+    """模拟 ctx.llm —— 默认返回失败响应（让 LLMRunner 走错误分支不报警）。
+
+    用 ``set_response(success=..., text=...)`` 改返回值；用
+    ``set_exception(exc)`` 让下次 generate 抛指定异常。
+    """
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self._response = {"success": False, "response": "", "error": "no llm in smoke"}
+        self._exc: Exception | None = None
+
+    def set_response(self, *, success: bool = True, text: str = ""):
+        self._response = {"success": success, "response": text}
+        self._exc = None
+
+    def set_exception(self, exc: Exception):
+        self._exc = exc
+
+    async def generate(self, prompt, model="", temperature=0.7, max_tokens=2000, **kwargs):
+        self.calls.append({"prompt": prompt, "model": model, "temperature": temperature})
+        if self._exc is not None:
+            raise self._exc
+        return self._response
+
+
 class MockSendCap:
     def __init__(self):
         self.sent = []
@@ -172,6 +198,7 @@ class MockCtx:
         self.config = MockConfigCap(**kwargs)
         self.api = MockAPICap()
         self.emoji = MockEmojiCap()
+        self.llm = MockLLMCap()
         self.send = MockSendCap()
 
 
@@ -773,13 +800,24 @@ async def test_check_diary_time_window():
 
 async def test_publish_topic_api_contract():
     p = _make_plugin()
-    from MaiTrace.handlers.apis import publish_topic_api
-    # send_feed 内部会调 cookie / qzone，肯定失败 → 应返回 result=False 但格式正确
-    result = await publish_topic_api(p, topic="测试", current_activity="")
-    assert isinstance(result, dict)
-    assert set(result.keys()) >= {"result", "story", "message"}
-    assert result["result"] is False  # 没真 cookie
-    assert isinstance(result["message"], str) and result["message"]
+    # 隔离副作用：mock cookie 流程，避免真实打 napcat HTTP / 扫码登录
+    import MaiTrace.services.feed_publish as fp_mod
+
+    async def fake_renew(*args, **kwargs):
+        return False  # cookie 失败 → send_feed 早返回
+
+    orig_renew = fp_mod.renew_cookies
+    fp_mod.renew_cookies = fake_renew
+    try:
+        from MaiTrace.handlers.apis import publish_topic_api
+        result = await publish_topic_api(p, topic="测试", current_activity="")
+        assert isinstance(result, dict)
+        assert set(result.keys()) >= {"result", "story", "message"}
+        assert result["result"] is False  # cookie 失败路径
+        assert isinstance(result["message"], str) and result["message"]
+        assert "更新 cookies" in result["message"] or "失败" in result["message"]
+    finally:
+        fp_mod.renew_cookies = orig_renew
 
 
 # ============================================================
