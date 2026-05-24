@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import datetime
 import logging
+from ...utils import get_logger
 import random
 import re
 from typing import Any, Dict, List, Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _msg_time(msg: Dict[str, Any]) -> float:
@@ -74,8 +75,20 @@ def _image_description(msg: Dict[str, Any]) -> str:
 class TimelineBuilder:
     """构建按小时分段的聊天时间线。"""
 
-    def __init__(self, bot_qq_account: str = "") -> None:
+    def __init__(
+        self,
+        bot_qq_account: str = "",
+        *,
+        per_message_max_chars: int = 200,
+    ) -> None:
+        """
+        Args:
+            bot_qq_account: bot 自己的 QQ，用于把 bot 的消息标记为"我"。
+            per_message_max_chars: 单条消息文本最大字符数，超出截断为
+                ``<前缀>...``。``0`` 表示不截断（最后会有整体 token 截断兜底）。
+        """
         self.bot_qq_account = str(bot_qq_account or "")
+        self.per_message_max_chars = max(0, int(per_message_max_chars or 0))
         self._stats: Dict[str, int] = {
             "total_messages": 0,
             "bot_messages": 0,
@@ -123,8 +136,12 @@ class TimelineBuilder:
                 parts.append(f"{prefix}: {tag}")
             else:
                 text = _msg_text(msg)
-                if text and len(text) > 50:
-                    text = text[:50] + "..."
+                if (
+                    self.per_message_max_chars > 0
+                    and text
+                    and len(text) > self.per_message_max_chars
+                ):
+                    text = text[: self.per_message_max_chars] + "..."
                 prefix = "我" if is_bot else nickname
                 parts.append(f"{prefix}: {text}")
 

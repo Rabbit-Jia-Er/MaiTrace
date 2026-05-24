@@ -5,7 +5,6 @@ config_back/
 *$py.class
 
 # Config & Data Files
-test*
 config.toml
 requirements.txt
 processed_list.json

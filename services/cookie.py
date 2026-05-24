@@ -15,11 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from ..utils import get_logger
 import math
 import os
 import re
 import time
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import httpx
 
@@ -30,7 +31,7 @@ from .persistence import (
     record_cookie_attempt,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 COOKIE_METHODS = ("adapter", "napcat", "clientkey", "qrcode", "local")
 # 需要用户交互或仅作 fallback 的方式：不参与按成功率重排，始终保持原顺序末尾
@@ -340,7 +341,6 @@ async def renew_cookies(
     used_method: str = ""
 
     for method in reordered:
-        attempt_ok = False
         try:
             if method == "adapter":
                 logger.info("尝试通过 napcat-adapter API 取 cookie...")
@@ -362,7 +362,6 @@ async def renew_cookies(
                 cookie_dict = read_local_cookies(uin)
             if cookie_dict:
                 logger.info("[%s] 取 cookie 成功", method)
-                attempt_ok = True
                 used_method = method
                 # local 不计入"主动获取"的成功率统计，避免污染
                 if method != "local":
@@ -377,8 +376,6 @@ async def renew_cookies(
             _cookie_state["last_error"] = f"[{method}] {exc}"
             if method != "local":
                 await record_cookie_attempt(method, False)
-
-        del attempt_ok  # silence linters
 
     if cookie_dict is None and fallback_to_local and "local" not in valid_methods:
         logger.info("所有方法失败，回退读本地 cookie")

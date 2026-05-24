@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import datetime
 import logging
+from ..utils import get_logger
 from typing import Any
 
 from ..services.feed_publish import send_feed
 from ..services.permission import check_permission
 from ..utils.date import parse_date, today_str
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 _KEYWORDS = {"gen", "generate", "ls", "list", "v", "view", "custom", "help", "debug"}
@@ -265,32 +266,57 @@ def _fmt_ts(ts: float) -> str:
 async def _debug_routine(plugin, stream_id: str) -> tuple:
     routine = getattr(plugin, "_routine", None)
     if routine is None:
-        await plugin.ctx.send.text("Routine 未启动（autonomous_planning 数据库未找到？）", stream_id)
+        await plugin.ctx.send.text("Routine 未启动（plugin.enabled=false？）", stream_id)
         return True, "no routine", True
     history = routine.get_decision_history()
+
+    lines: list[str] = []
+    snapshot = routine.get_planning_snapshot() if hasattr(routine, "get_planning_snapshot") else None
+    if snapshot is None:
+        lines.append("规划插件 API：尚未收到任何响应（autonomous-planning-plugin-v4 未安装？）")
+    elif not snapshot.get("has_activity"):
+        lines.append(f"规划插件 API：has_activity=False ({snapshot.get('as_of', '')})")
+    else:
+        act = snapshot.get("activity") or {}
+        lines.append(
+            f"规划插件 API：[{act.get('goal_type', '')}] {act.get('name', '')} "
+            f"({act.get('time_window') or '-'})"
+        )
+
     if not history:
-        await plugin.ctx.send.text("Routine 尚未产生决策记录（启动 < 1 个 check 周期）", stream_id)
+        lines.append("Routine 尚未产生决策记录（启动 < 1 个 check 周期）")
+        await plugin.ctx.send.text("\n".join(lines), stream_id)
         return True, "empty history", True
 
-    lines = [f"最近 {len(history)} 次 Routine 决策（按时间倒序）："]
+    lines.append("")
+    lines.append(f"最近 {len(history)} 次 Routine 决策（按时间倒序）：")
     for entry in reversed(history):
         ts = _fmt_ts(entry.get("ts", 0))
         action = entry.get("action", "?")
         atype = entry.get("activity_type", "?")
         adesc = (entry.get("activity_desc", "") or "")[:24]
+        reason = (entry.get("reason", "") or "").strip()
         if entry.get("cooldown_skipped"):
             result = "冷却跳过"
+        elif entry.get("hard_blocked"):
+            result = f"硬规则拒绝 ({reason})" if reason else "硬规则拒绝"
+        elif entry.get("dice_skipped"):
+            result = f"LLM=是 但掷骰跳过 ({reason})" if reason else "LLM=是 但掷骰跳过"
         elif entry.get("decision"):
             executed = entry.get("executed")
             if executed is True:
-                result = "✓ 已执行"
+                result = f"✓ 已执行 ({reason})" if reason else "✓ 已执行"
             elif executed is False:
-                result = f"✗ 执行失败 ({entry.get('error', '') or '?'})"
+                err = entry.get("error", "") or "?"
+                result = f"✗ 执行失败 ({err})"
             else:
-                result = "决策=是，执行中"
+                result = f"决策=是，执行中 ({reason})" if reason else "决策=是，执行中"
         else:
-            answer = (entry.get("llm_answer", "") or "").strip().replace("\n", " ")[:30]
-            result = f"决策=否 ({answer})" if answer else "决策=否"
+            if reason:
+                result = f"决策=否 ({reason})"
+            else:
+                answer = (entry.get("llm_answer", "") or "").strip().replace("\n", " ")[:30]
+                result = f"决策=否 ({answer})" if answer else "决策=否"
         lines.append(f"  {ts} [{action}] {atype}:{adesc} → {result}")
     await plugin.ctx.send.text("\n".join(lines), stream_id)
     return True, "ok", True

@@ -6,16 +6,17 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
+from ..utils import get_logger
 import random
 from typing import Any
 
-from ..utils import peel_envelope
+from ..utils import get_global_str, peel_envelope
 from ..utils.time_window import is_in_silent_period
 from .cookie import renew_cookies
 from .feed_read import make_qzone_api
 from .llm_runner import LLMRunner
+from .persona import Persona, resolve_persona
 from .persistence import (
     load_processed_comments,
     load_processed_list,
@@ -25,19 +26,7 @@ from .persistence import (
 from .prompts import build_comment_prompt, build_reply_prompt, build_reply_to_reply_prompt
 from .qzone_api import QzoneAPI
 
-logger = logging.getLogger(__name__)
-
-
-async def _get_global_str(ctx, key: str, default: str = "") -> str:
-    try:
-        value = await ctx.config.get(key, default)
-    except Exception as exc:
-        logger.warning("ctx.config.get(%s) 异常: %s", key, exc)
-        return default
-    value = peel_envelope(value)
-    if isinstance(value, dict):
-        value = value.get("value", default)
-    return str(value or default)
+logger = get_logger(__name__)
 
 
 async def _get_impression(plugin, user_id: str) -> str:
@@ -93,7 +82,7 @@ class FeedMonitor:
             return True, "静默期跳过"
 
         # cookie
-        qq_account = await _get_global_str(self.plugin.ctx, "bot.qq_account", "")
+        qq_account = await get_global_str(self.plugin.ctx, "bot.qq_account", "")
         if not qq_account:
             return False, "未读到 bot.qq_account"
 
@@ -124,8 +113,8 @@ class FeedMonitor:
             logger.info("未读取到新说说")
             return True, "no feeds"
 
-        bot_personality = await _get_global_str(self.plugin.ctx, "personality.personality", "一个机器人")
-        bot_expression = await _get_global_str(self.plugin.ctx, "personality.reply_style", "内容积极向上")
+        # 人格（含 multiple_reply_style 抽样 + self_description）
+        persona = await resolve_persona(self.plugin)
         runner = LLMRunner(
             self.plugin.ctx,
             self.plugin.config.llm.text_model,
@@ -160,7 +149,7 @@ class FeedMonitor:
                     continue
                 await self._reply_self_feed_comments(
                     qzone, fid, target_qq, content, comments_list, qq_account,
-                    runner, bot_personality, bot_expression, processed_comments,
+                    runner, persona, processed_comments,
                     show_prompt=show_prompt,
                 )
                 continue
@@ -172,7 +161,7 @@ class FeedMonitor:
                     continue
                 await self._reply_others_to_bot_comment(
                     qzone, fid, target_qq, content, comments_list, qq_account,
-                    runner, bot_personality, bot_expression, processed_comments,
+                    runner, persona, processed_comments,
                     show_prompt=show_prompt,
                 )
                 continue
@@ -180,7 +169,7 @@ class FeedMonitor:
             # 未处理过 → 评论 + 点赞
             await self._comment_and_like(
                 qzone, fid, target_qq, content, rt_con, created_time,
-                runner, bot_personality, bot_expression,
+                runner, persona,
                 allow_like=allow_like, allow_comment=allow_comment,
                 show_prompt=show_prompt,
             )
@@ -205,8 +194,7 @@ class FeedMonitor:
         rt_con: str,
         created_time: str,
         runner: LLMRunner,
-        bot_personality: str,
-        bot_expression: str,
+        persona: Persona,
         *,
         allow_like: bool,
         allow_comment: bool,
@@ -219,7 +207,8 @@ class FeedMonitor:
         if allow_comment and random.random() <= cfg_monitor.comment_probability:
             prompt = build_comment_prompt(
                 self.plugin, target_qq, content, created_time,
-                bot_personality, bot_expression, impression, rt_con,
+                persona.personality, persona.style, impression, rt_con,
+                self_description=persona.self_description,
             )
             if show_prompt:
                 logger.info("评论 prompt: %s", prompt)
@@ -256,8 +245,7 @@ class FeedMonitor:
         comments_list: list[dict[str, Any]],
         qq_account: str,
         runner: LLMRunner,
-        bot_personality: str,
-        bot_expression: str,
+        persona: Persona,
         processed_comments: dict[str, list[str]],
         *,
         show_prompt: bool,
@@ -290,9 +278,10 @@ class FeedMonitor:
                 content=content,
                 comment_content=comment.get("content", ""),
                 created_time=comment.get("created_time", ""),
-                bot_personality=bot_personality,
-                bot_expression=bot_expression,
+                bot_personality=persona.personality,
+                bot_expression=persona.style,
                 impression=impression,
+                self_description=persona.self_description,
             )
             if show_prompt:
                 logger.info("回复评论 prompt: %s", prompt)
@@ -327,8 +316,7 @@ class FeedMonitor:
         comments_list: list[dict[str, Any]],
         qq_account: str,
         runner: LLMRunner,
-        bot_personality: str,
-        bot_expression: str,
+        persona: Persona,
         processed_comments: dict[str, list[str]],
         *,
         show_prompt: bool,
@@ -366,9 +354,10 @@ class FeedMonitor:
                 bot_comment=bot_original,
                 reply_content=reply_c.get("content", ""),
                 created_time=reply_c.get("created_time", ""),
-                bot_personality=bot_personality,
-                bot_expression=bot_expression,
+                bot_personality=persona.personality,
+                bot_expression=persona.style,
                 impression=impression,
+                self_description=persona.self_description,
             )
             if show_prompt:
                 logger.info("回复链式 prompt: %s", prompt)

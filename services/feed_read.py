@@ -4,33 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from ..utils import get_logger
 import random
 from typing import Any, Optional
 
-from ..utils import peel_envelope
+from ..utils import get_global_str, peel_envelope
 from .cookie import renew_cookies
 from .llm_runner import LLMRunner
+from .persona import resolve_persona
 from .prompts import build_comment_prompt
 from .qzone_api import QzoneAPI, create_qzone_api
 
-logger = logging.getLogger(__name__)
-
-
-async def _get_global_str(ctx, key: str, default: str = "") -> str:
-    try:
-        value = await ctx.config.get(key, default)
-    except Exception as exc:
-        logger.warning("ctx.config.get(%s) 异常: %s", key, exc)
-        return default
-    value = peel_envelope(value)
-    if isinstance(value, dict):
-        value = value.get("value", default)
-    return str(value or default)
+logger = get_logger(__name__)
 
 
 async def renew_cookies_from_plugin(plugin) -> bool:
     """便捷封装：从 plugin 取所有参数刷 cookie。"""
-    uin = await _get_global_str(plugin.ctx, "bot.qq_account", "")
+    uin = await get_global_str(plugin.ctx, "bot.qq_account", "")
     return await renew_cookies(
         plugin.ctx,
         host=plugin.config.plugin.http_host,
@@ -45,7 +35,7 @@ async def make_qzone_api(plugin) -> Optional[QzoneAPI]:
     """便捷封装：刷 cookie + 取 uin + 构造 QzoneAPI。"""
     if not await renew_cookies_from_plugin(plugin):
         return None
-    uin = await _get_global_str(plugin.ctx, "bot.qq_account", "")
+    uin = await get_global_str(plugin.ctx, "bot.qq_account", "")
     return create_qzone_api(uin)
 
 
@@ -163,9 +153,8 @@ async def read_and_engage(
     # 印象
     _, impression = await _get_person_info(plugin, target_qq)
 
-    # 人格
-    bot_personality = await _get_global_str(plugin.ctx, "personality.personality", "一个机器人")
-    bot_expression = await _get_global_str(plugin.ctx, "personality.reply_style", "内容积极向上")
+    # 人格（含 multiple_reply_style 抽样 + self_description）
+    persona = await resolve_persona(plugin)
 
     runner = LLMRunner(
         plugin.ctx,
@@ -193,7 +182,8 @@ async def read_and_engage(
         if random.random() <= comment_p:
             prompt = build_comment_prompt(
                 plugin, target_name, content, created_time,
-                bot_personality, bot_expression, impression, rt_con,
+                persona.personality, persona.style, impression, rt_con,
+                self_description=persona.self_description,
             )
             if show_prompt:
                 logger.info("评论 prompt: %s", prompt)

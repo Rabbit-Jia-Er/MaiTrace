@@ -2,9 +2,10 @@
 
 import datetime
 import logging
+from ._logging import get_logger
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _parse_time_to_minutes(time_str: str) -> Optional[int]:

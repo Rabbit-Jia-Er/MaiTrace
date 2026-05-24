@@ -1,15 +1,19 @@
 """Prompt 构建（发说说 / 评论 / 回复 / 回复他人空间的回复）。
 
 模板从 plugin.config 里取，本模块只负责字段填充与拼接。
+
+所有 prompt 在最终输出前会把 ``persona.self_description`` 拼到开头（如非空），
+让 LLM 知道"我是谁、长什么样"。
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
+from ..utils import get_logger
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _now_str() -> str:
@@ -37,6 +41,17 @@ def _safe_format(template: str, data: dict) -> str:
             return template
 
 
+def _prepend_self(prompt: str, self_description: str) -> str:
+    """把 self_description 拼到 prompt 开头。空值直接返回原 prompt。"""
+    desc = (self_description or "").strip()
+    if not desc:
+        return prompt
+    # 保证以句号结尾，但不重复加
+    if not desc.endswith(("。", ".", "！", "!", "？", "?")):
+        desc += "。"
+    return f"关于你：{desc}\n{prompt}"
+
+
 async def build_send_prompt(
     plugin,
     topic: str,
@@ -45,10 +60,12 @@ async def build_send_prompt(
     *,
     qzone_api=None,
     current_activity: str = "",
+    self_description: str = "",
 ) -> str:
     """构造发说说 prompt。
 
     qzone_api 不为 None 时会追加近期说说历史，避免重复内容。
+    self_description 非空时会拼到 prompt 最开头。
     """
     template = plugin.config.send.prompt
     data = {
@@ -71,7 +88,7 @@ async def build_send_prompt(
         except Exception as exc:
             logger.warning("拉历史说说失败: %s", exc)
     prompt += "\n不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )"
-    return prompt
+    return _prepend_self(prompt, self_description)
 
 
 def build_comment_prompt(
@@ -83,6 +100,7 @@ def build_comment_prompt(
     bot_expression: str,
     impression: Any,
     rt_con: str = "",
+    self_description: str = "",
 ) -> str:
     """构造评论说说的 prompt。rt_con 非空走 rt_prompt 模板。"""
     data = {
@@ -99,7 +117,7 @@ def build_comment_prompt(
     else:
         template = plugin.config.read.rt_prompt
         data["rt_con"] = rt_con
-    return _safe_format(template, data)
+    return _prepend_self(_safe_format(template, data), self_description)
 
 
 def build_reply_prompt(
@@ -111,6 +129,7 @@ def build_reply_prompt(
     bot_personality: str,
     bot_expression: str,
     impression: Any,
+    self_description: str = "",
 ) -> str:
     """构造回复自己说说下评论的 prompt。"""
     data = {
@@ -123,7 +142,7 @@ def build_reply_prompt(
         "comment_content": comment_content,
         "impression": str(impression) if impression is not None else "无印象",
     }
-    return _safe_format(plugin.config.monitor.reply_prompt, data)
+    return _prepend_self(_safe_format(plugin.config.monitor.reply_prompt, data), self_description)
 
 
 def build_reply_to_reply_prompt(
@@ -136,6 +155,7 @@ def build_reply_to_reply_prompt(
     bot_personality: str,
     bot_expression: str,
     impression: Any,
+    self_description: str = "",
 ) -> str:
     """构造回复他人空间中对 bot 评论的回复的 prompt。"""
     data = {
@@ -149,18 +169,4 @@ def build_reply_to_reply_prompt(
         "reply_content": reply_content,
         "impression": str(impression) if impression is not None else "无印象",
     }
-    return _safe_format(plugin.config.monitor.reply_to_reply_prompt, data)
-
-
-def build_image_prompt(
-    plugin,
-    message: str,
-    personality: str,
-) -> str:
-    """构造给生图模型的提示词（PromptOptimizer 不可用时的备选）。"""
-    data = {
-        "current_time": _now_str(),
-        "personality": personality,
-        "message": message,
-    }
-    return _safe_format(plugin.config.image.image_prompt, data)
+    return _prepend_self(_safe_format(plugin.config.monitor.reply_to_reply_prompt, data), self_description)

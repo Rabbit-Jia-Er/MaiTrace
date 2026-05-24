@@ -59,11 +59,6 @@ _DEFAULT_REPLY_TO_REPLY_PROMPT = (
     "不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )。只输出回复内容"
 )
 
-_DEFAULT_IMAGE_PROMPT = (
-    "请根据以下QQ空间说说内容配图，并构建生成配图的风格和prompt。说说主人信息：'{personality}'。说说内容:'{"
-    "message}'。请注意：仅回复用于生成图片的prompt，不要输出多余内容(包括前后缀，冒号和引号，括号()，表情包，at或 @等 )"
-)
-
 
 # ===== Sections =====
 
@@ -260,18 +255,6 @@ class ImageSection(PluginConfigBase):
             "depends_on": "image.enable_image",
             "depends_value": True,
             "order": 5,
-        },
-    )
-    image_prompt: str = Field(
-        default=_DEFAULT_IMAGE_PROMPT,
-        description="AI 生图提示词模板（PromptOptimizer 不可用时备选）。占位符: {personality} {message} {current_time}",
-        json_schema_extra={
-            "label": "生图 prompt",
-            "hint": "占位符: {personality} {message} {current_time}",
-            "rows": 5,
-            "depends_on": "image.enable_image",
-            "depends_value": True,
-            "order": 6,
         },
     )
     clear_image: bool = Field(
@@ -554,6 +537,75 @@ class RoutineSection(PluginConfigBase):
             "order": 3,
         },
     )
+    respect_silent_hours: bool = Field(
+        default=True,
+        description=(
+            "是否让 [monitor].silent_hours 同时卡发说说和刷空间决策。"
+            "true=深夜静默时段直接跳过，不调 LLM；false=只卡刷空间评论（旧行为）。"
+        ),
+        json_schema_extra={
+            "label": "复用静默时段",
+            "hint": "true=深夜也不发说说/刷空间",
+            "order": 10,
+        },
+    )
+    post_blocked_activities: List[str] = Field(
+        default_factory=lambda: ["sleeping", "working", "studying", "eating", "exercising"],
+        description=(
+            "发说说时禁止的活动类型。命中直接跳过，不调 LLM。"
+            "可选值（ActivityType 小写）：sleeping / waking_up / eating / working / studying / "
+            "exercising / relaxing / socializing / commuting / hobby / self_care / other"
+        ),
+        json_schema_extra={
+            "label": "发说说禁止活动",
+            "hint": "命中直接跳过；ActivityType 小写",
+            "item_type": "string",
+            "order": 11,
+        },
+    )
+    browse_blocked_activities: List[str] = Field(
+        default_factory=lambda: ["sleeping", "working", "studying", "eating", "exercising"],
+        description="刷空间时禁止的活动类型，格式同 post_blocked_activities。",
+        json_schema_extra={
+            "label": "刷空间禁止活动",
+            "hint": "命中直接跳过；ActivityType 小写",
+            "item_type": "string",
+            "order": 12,
+        },
+    )
+    max_post_chance: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description=(
+            "LLM 通过后的二次概率上限（0-1）。1.0=LLM 说是就发；"
+            "0.3=LLM 说是后还要 30% 概率才真发。降低这个值能让 LLM 偶尔误判时也不会狂发。"
+        ),
+        json_schema_extra={
+            "label": "发说说概率上限",
+            "hint": "0-1；1.0=不限制，0.3=LLM 通过后再掷骰",
+            "order": 20,
+        },
+    )
+    max_browse_chance: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="同 max_post_chance，作用于刷空间。",
+        json_schema_extra={
+            "label": "刷空间概率上限",
+            "hint": "0-1；1.0=不限制",
+            "order": 21,
+        },
+    )
+    require_reason: bool = Field(
+        default=True,
+        description=(
+            "是否要求 LLM 输出 '是|理由' / '否|理由' 格式。"
+            "true=方便调试，/zn debug routine 能看到 LLM 给的理由；false=只回'是/否'。"
+        ),
+        json_schema_extra={
+            "label": "要求 LLM 给理由",
+            "hint": "true=便于 debug 查看决策原因",
+            "order": 30,
+        },
+    )
 
 
 class LLMSection(PluginConfigBase):
@@ -658,6 +710,18 @@ class DiarySection(PluginConfigBase):
             "order": 5,
         },
     )
+    per_message_max_chars: int = Field(
+        default=200, ge=0, le=2000,
+        description=(
+            "Timeline 中单条消息最大字符数，超出会截断为 \"<前缀>...\"。"
+            "0 = 不截断（不推荐，长发言会吃 token）。原 v3.0 硬编码 50 过于激进。"
+        ),
+        json_schema_extra={
+            "label": "单条消息截断",
+            "hint": "0-2000；0=不截断，建议 200",
+            "order": 6,
+        },
+    )
     min_word_count: int = Field(
         default=250, ge=20, le=8000,
         description="日记最少字数（不足会触发 LLM 重试/扩写）。",
@@ -715,6 +779,60 @@ class DiarySection(PluginConfigBase):
             "depends_on": "diary.style",
             "depends_value": "custom",
             "order": 30,
+        },
+    )
+
+
+class PersonaSection(PluginConfigBase):
+    """人格扩展配置（补主程序 [personality] 没覆盖的字段）。
+
+    所有 LLM 写说说 / 评论 / 回复 / 日记的链路共用本段。
+    """
+
+    __ui_label__: ClassVar[str] = "人格扩展"
+    __ui_icon__: ClassVar[str] = "user-plus"
+    __ui_order__: ClassVar[int] = 9
+
+    self_description: str = Field(
+        default="",
+        description=(
+            "自我形象/身份描述（中文，可空）。会注入到所有 LLM prompt 的开头，"
+            "让 LLM 在写说说/评论/日记时知道你的外观或额外身份。"
+            "示例：\"我是银发红瞳的狐妖。\""
+        ),
+        json_schema_extra={
+            "label": "自我形象描述",
+            "hint": "中文一句话，空=不注入",
+            "placeholder": "我是银发红瞳的狐妖。",
+            "input_type": "textarea",
+            "rows": 3,
+            "order": 1,
+        },
+    )
+    use_art_selfie_prompt: bool = Field(
+        default=False,
+        description=(
+            "self_description 为空时，尝试从麦麦绘卷 (mais_art_journal) 读 "
+            "selfie.prompt_prefix（英文 SD prompt）作为兜底注入。"
+            "建议在 self_description 里手写中文，本字段只是英文兜底。"
+        ),
+        json_schema_extra={
+            "label": "借用绘卷 selfie 前缀",
+            "hint": "self_description 为空时从绘卷拿英文前缀兜底",
+            "order": 2,
+        },
+    )
+    use_multiple_reply_style: bool = Field(
+        default=True,
+        description=(
+            "是否启用主程序 [personality].multiple_reply_style 风格池抽样。"
+            "true=按 multiple_probability 概率从池中随机选一条替换 reply_style，"
+            "与主程序聊天回复行为对齐。"
+        ),
+        json_schema_extra={
+            "label": "启用风格池抽样",
+            "hint": "true=与主程序回复一样按概率切风格",
+            "order": 10,
         },
     )
 
@@ -814,4 +932,5 @@ class MaiTracePluginConfig(PluginConfigBase):
     routine: RoutineSection = Field(default_factory=RoutineSection)
     llm: LLMSection = Field(default_factory=LLMSection)
     diary: DiarySection = Field(default_factory=DiarySection)
+    persona: PersonaSection = Field(default_factory=PersonaSection)
     diary_model: DiaryModelSection = Field(default_factory=DiaryModelSection)

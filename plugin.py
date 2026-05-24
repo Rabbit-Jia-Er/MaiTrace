@@ -1,7 +1,7 @@
 """MaiTrace（麦麦空间）插件入口 — 新 SDK 版本
 
 业务逻辑全部抽到 services/，命令/动作/API 在 handlers/。
-plugin.py 只负责：装配生命周期、声明 @Command/@Action/@API 装饰器。
+plugin.py 只负责：装配生命周期、声明 @Command/@Tool/@API 装饰器。
 """
 
 from __future__ import annotations
@@ -9,23 +9,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from .utils import get_logger
 from collections.abc import Mapping
 from typing import Any, ClassVar, Optional
 
 from maibot_sdk import (
     API,
-    Action,
     Command,
     Field,
     MaiBotPlugin,
     PluginConfigBase,
     Tool,
 )
-from maibot_sdk.types import ActivationType, ToolParameterInfo, ToolParamType
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from .config import MaiTracePluginConfig
 
-logger = logging.getLogger("maitrace.plugin")
+logger = get_logger(__name__)
 
 
 # ===== 配置迁移：v3.0 → v3.1 =====
@@ -39,7 +39,7 @@ _IMAGE_FIELDS_FROM_SEND = (
     "image_number",
     "pic_plugin_model",
 )
-_IMAGE_FIELDS_FROM_LLM = ("image_prompt", "clear_image")
+_IMAGE_FIELDS_FROM_LLM = ("clear_image",)
 _LLM_FIELDS = ("text_model", "llm_timeout_seconds", "show_prompt")
 
 
@@ -63,7 +63,7 @@ def _migrate_v30_to_v31(raw_config: dict[str, Any]) -> tuple[dict[str, Any], boo
             send.pop(field, None)
             changed = True
 
-    # 2) [models].image_prompt / clear_image → [image]
+    # 2) [models].clear_image → [image]
     for field in _IMAGE_FIELDS_FROM_LLM:
         if field in models and field not in image:
             image[field] = models.pop(field)
@@ -210,7 +210,7 @@ class MaiTracePlugin(MaiBotPlugin):
 
         self._migrated_data = True
 
-    # ===== Command / Action / Tool 组件（具体逻辑分发到 handlers/） =====
+    # ===== Command / Tool / API 组件（具体逻辑分发到 handlers/） =====
 
     @Command(
         "zn",
@@ -221,41 +221,53 @@ class MaiTracePlugin(MaiBotPlugin):
         from .handlers.commands import dispatch_zn
         return await dispatch_zn(self, **kwargs)
 
-    @Action(
+    @Tool(
         "send_feed",
-        description="发一条相应主题的说说（包含图片，自带回复）",
-        activation_type=ActivationType.KEYWORD,
-        activation_keywords=["说说", "空间", "动态"],
-        action_parameters={
-            "topic": "要发送的说说主题或完整内容",
-            "user_name": "要求你发说说的好友的 QQ 名称",
-        },
-        action_require=[
-            "用户要求发说说时使用",
-            "当有人希望你更新 QQ 空间时使用",
-            "当你认为适合发说说时使用",
+        description="发一条相应主题的说说到 QQ 空间（自动配图，附结果回复）。",
+        detailed_description=(
+            "适用场景：用户要求发说说、有人希望你更新 QQ 空间、或你自行判断适合发说说时。"
+            "典型触发词：说说 / 空间 / 动态。"
+        ),
+        parameters=[
+            ToolParameterInfo(
+                name="topic",
+                param_type=ToolParamType.STRING,
+                description="要发送的说说主题或完整内容",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="user_name",
+                param_type=ToolParamType.STRING,
+                description="要求你发说说的好友的 QQ 名称",
+                required=False,
+            ),
         ],
-        associated_types=["text"],
     )
     async def handle_send_feed(self, **kwargs: Any) -> tuple:
         from .handlers.actions import execute_send_feed
         return await execute_send_feed(self, **kwargs)
 
-    @Action(
+    @Tool(
         "read_feed",
-        description="读取好友最近的动态/说说并评论点赞（自带回复）",
-        activation_type=ActivationType.KEYWORD,
-        activation_keywords=["说说", "空间", "动态"],
-        action_parameters={
-            "target_name": "需要阅读动态的好友的 QQ 名称",
-            "user_name": "要求你阅读动态的好友的 QQ 名称",
-        },
-        action_require=[
-            "需要阅读某人动态/说说/QQ空间时使用",
-            "当有人希望你评价某人的动态/说说/QQ空间",
-            "当你认为适合阅读说说时使用",
+        description="读取指定好友最近的 QQ 空间动态并评论点赞（附结果回复）。",
+        detailed_description=(
+            "适用场景：需要查看某人动态/说说/QQ 空间，或有人希望你评价某人的空间内容时。"
+            "典型触发词：说说 / 空间 / 动态。"
+        ),
+        parameters=[
+            ToolParameterInfo(
+                name="target_name",
+                param_type=ToolParamType.STRING,
+                description="需要阅读动态的好友的 QQ 名称",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="user_name",
+                param_type=ToolParamType.STRING,
+                description="要求你阅读动态的好友的 QQ 名称",
+                required=False,
+            ),
         ],
-        associated_types=["text"],
     )
     async def handle_read_feed(self, **kwargs: Any) -> tuple:
         from .handlers.actions import execute_read_feed
@@ -263,14 +275,14 @@ class MaiTracePlugin(MaiBotPlugin):
 
     @API(
         "send_feed_api",
-        description="发送一条说说到 QQ 空间。参数：message(str, 必填)、images(list[bytes], 可选)。",
+        description="发送一条说说到 QQ 空间。参数：message(str, 必填)、images(list[str] base64, 可选)。",
         version="1",
         public=True,
     )
     async def handle_send_feed_api(
         self,
         message: str = "",
-        images: Optional[list[bytes]] = None,
+        images: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> dict:
         del kwargs
@@ -292,6 +304,30 @@ class MaiTracePlugin(MaiBotPlugin):
         del kwargs
         from .handlers.apis import get_feeds_list_api
         return await get_feeds_list_api(self, target_qq=target_qq, num=num)
+
+    @API(
+        "publish_topic_api",
+        description=(
+            "完整发说说流程：LLM 按主题生成正文 + 自动配图 + 发布。"
+            "参数：topic(str, 必填，传 'custom' 走私聊取词模式)、current_activity(str, 可选)。"
+            "返回 {result, story, message}。"
+        ),
+        version="1",
+        public=True,
+    )
+    async def handle_publish_topic_api(
+        self,
+        topic: str = "",
+        current_activity: str = "",
+        **kwargs: Any,
+    ) -> dict:
+        del kwargs
+        from .handlers.apis import publish_topic_api
+        return await publish_topic_api(
+            self,
+            topic=topic,
+            current_activity=current_activity,
+        )
 
 
 def create_plugin() -> MaiTracePlugin:

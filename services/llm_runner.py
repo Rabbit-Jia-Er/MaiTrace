@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from ..utils import get_logger
 from typing import Any
 
 from ..utils import peel_envelope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LLMRunner:

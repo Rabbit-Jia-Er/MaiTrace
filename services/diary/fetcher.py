@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import logging
+from ...utils import get_logger
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...utils import peel_envelope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _parse_target_config(configs: List[str]) -> Tuple[List[str], List[str]]:

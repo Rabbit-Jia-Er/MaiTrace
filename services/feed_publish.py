@@ -6,39 +6,22 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from ..utils import get_logger
+from typing import Optional
 
-from ..utils import peel_envelope
+from ..utils import get_global_str, peel_envelope
 from .cookie import renew_cookies
-from .feed_image import collect_images_for_feed, cleanup_done_paths
+from .feed_image import collect_images_for_feed
 from .llm_runner import LLMRunner
+from .persona import resolve_persona
 from .prompts import build_send_prompt
 from .qzone_api import create_qzone_api
 
-logger = logging.getLogger(__name__)
-
-
-async def _get_global_str(ctx, key: str, default: str = "") -> str:
-    try:
-        value = await ctx.config.get(key, default)
-    except Exception as exc:
-        logger.warning("ctx.config.get(%s) 异常: %s", key, exc)
-        return default
-    value = peel_envelope(value)
-    if isinstance(value, dict):
-        value = value.get("value", default)
-    return str(value or default)
+logger = get_logger(__name__)
 
 
 async def _resolve_bot_uin(ctx) -> str:
-    return await _get_global_str(ctx, "bot.qq_account", "")
-
-
-async def _resolve_personality(ctx) -> tuple[str, str]:
-    """返回 (personality, reply_style)。"""
-    p = await _get_global_str(ctx, "personality.personality", "一个机器人")
-    s = await _get_global_str(ctx, "personality.reply_style", "内容积极向上")
-    return p, s
+    return await get_global_str(ctx, "bot.qq_account", "")
 
 
 async def _renew_cookies(plugin) -> bool:
@@ -152,11 +135,14 @@ async def send_feed(
             return False, "custom 模式取私聊内容失败"
         story = custom_message
         logger.info("custom 模式说说内容: %s", story)
+        # custom 模式仍需要 persona.self_description 在配图时用
+        persona = await resolve_persona(plugin)
     else:
-        personality, expression = await _resolve_personality(plugin.ctx)
+        persona = await resolve_persona(plugin)
         prompt = await build_send_prompt(
-            plugin, topic or "随机", personality, expression,
+            plugin, topic or "随机", persona.personality, persona.style,
             qzone_api=qzone, current_activity=current_activity,
+            self_description=persona.self_description,
         )
         if plugin.config.llm.show_prompt:
             logger.info("发说说 prompt: %s", prompt)
@@ -171,15 +157,16 @@ async def send_feed(
             return False, f"生成说说内容失败: {story}"
         logger.info("生成说说内容: %s", story)
 
-    # 4. 收集图片
-    personality_str, _ = await _resolve_personality(plugin.ctx)
-    images, done_paths = await collect_images_for_feed(plugin, story, personality_str)
+    # 4. 收集图片（self_description 拼进生图 prompt，让绘卷也知道形象）
+    images = await collect_images_for_feed(
+        plugin, story,
+        self_description=persona.self_description,
+    )
 
     # 5. 发布
     try:
         tid = await qzone.publish_emotion(story, images)
         logger.info("成功发送说说, tid=%s", tid)
-        cleanup_done_paths(plugin, done_paths)
         return True, story
     except Exception as exc:
         logger.error("发送说说失败: %s", exc, exc_info=True)

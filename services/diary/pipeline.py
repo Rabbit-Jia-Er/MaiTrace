@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+from ...utils import get_logger
 import random
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from openai import AsyncOpenAI
 
@@ -15,6 +16,7 @@ from ...utils import (
     MAX_DIARY_LENGTH,
     TOKEN_LIMIT_50K,
     estimate_tokens,
+    get_global_str,
     peel_envelope,
     smart_truncate,
     truncate_by_tokens,
@@ -22,33 +24,14 @@ from ...utils import (
 from ...utils.date import date_with_weather
 from ..cookie import renew_cookies
 from ..llm_runner import LLMRunner
+from ..persona import resolve_persona
 from ..qzone_api import create_qzone_api
 from .fetcher import MessageFetcher, _resolve_session_id
 from .prompts import build_custom_prompt, build_diary_prompt, build_qqzone_prompt
 from .storage import DiaryStorage
 from .timeline import TimelineBuilder, weather_by_emotion
 
-logger = logging.getLogger(__name__)
-
-
-async def _get_global(ctx, key: str, default: str = "") -> str:
-    try:
-        value = await ctx.config.get(key, default)
-    except Exception as exc:
-        logger.warning("ctx.config.get(%s) 异常: %s", key, exc)
-        return default
-    value = peel_envelope(value)
-    if isinstance(value, dict):
-        value = value.get("value", default)
-    return str(value or default)
-
-
-async def _resolve_personality(ctx) -> Dict[str, str]:
-    return {
-        "core": await _get_global(ctx, "personality.personality", "是一个机器人助手"),
-        "style": await _get_global(ctx, "personality.reply_style", ""),
-        "nickname": await _get_global(ctx, "bot.nickname", ""),
-    }
+logger = get_logger(__name__)
 
 
 def _parse_target_chats(s: str) -> List[str]:
@@ -146,10 +129,13 @@ class DiaryPipeline:
 
     async def _generate_from_messages(self, date: str, messages: List[Dict[str, Any]]) -> Tuple[bool, str]:
         try:
-            personality = await _resolve_personality(self._ctx)
-            bot_qq = await _get_global(self._ctx, "bot.qq_account", "")
+            persona = await resolve_persona(self._plugin)
+            bot_qq = await get_global_str(self._ctx, "bot.qq_account", "")
 
-            timeline_builder = TimelineBuilder(bot_qq_account=bot_qq)
+            timeline_builder = TimelineBuilder(
+                bot_qq_account=bot_qq,
+                per_message_max_chars=self._plugin.config.diary.per_message_max_chars,
+            )
             timeline = timeline_builder.build(messages)
 
             if estimate_tokens(timeline) > TOKEN_LIMIT_50K:
@@ -170,7 +156,7 @@ class DiaryPipeline:
                 timeline=timeline,
                 date_str=date_str,
                 target_length=target_length,
-                personality=personality,
+                persona=persona,
             )
 
             if self._plugin.config.llm.show_prompt:
@@ -210,12 +196,13 @@ class DiaryPipeline:
         timeline: str,
         date_str: str,
         target_length: int,
-        personality: Dict[str, str],
+        persona,
     ) -> str:
         cfg = self._plugin.config.diary
         style = cfg.style
-        personality_desc = personality["core"]
-        name = personality.get("nickname", "")
+        personality_desc = persona.personality
+        name = persona.nickname
+        self_description = persona.self_description
 
         if style == "custom":
             ctx = {
@@ -224,8 +211,9 @@ class DiaryPipeline:
                 "date_with_weather": date_str,
                 "target_length": str(target_length),
                 "personality_desc": personality_desc,
-                "style": personality.get("style", ""),
+                "style": persona.style,
                 "name": name,
+                "self_description": self_description,
             }
             try:
                 return build_custom_prompt(cfg.custom_prompt, ctx)
@@ -237,12 +225,14 @@ class DiaryPipeline:
             return build_qqzone_prompt(
                 date=date, timeline=timeline, date_with_weather=date_str,
                 target_length=target_length, personality_desc=personality_desc,
-                style_desc=personality.get("style", ""), name=name,
+                style_desc=persona.style, name=name,
+                self_description=self_description,
             )
         return build_diary_prompt(
             date=date, timeline=timeline, date_with_weather=date_str,
             target_length=target_length, personality_desc=personality_desc,
-            style_desc=personality.get("style", ""), name=name,
+            style_desc=persona.style, name=name,
+            self_description=self_description,
         )
 
     async def _call_model(self, prompt: str, timeline: str) -> str:
@@ -313,7 +303,7 @@ class DiaryPipeline:
 
     async def publish_to_qzone(self, date: str, content: str) -> bool:
         """通过 services/cookie + services/qzone_api 发布日记到空间。"""
-        bot_qq = await _get_global(self._ctx, "bot.qq_account", "")
+        bot_qq = await get_global_str(self._ctx, "bot.qq_account", "")
         if not bot_qq:
             return False
 

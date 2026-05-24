@@ -1,1 +1,1 @@
-"""MaiTrace handlers 层：@Command / @Action / @Tool / @API 入口分发。"""
+"""MaiTrace handlers 层：@Command / @Tool / @API 入口分发。"""

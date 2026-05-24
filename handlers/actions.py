@@ -1,11 +1,12 @@
-"""SendFeed / ReadFeed Action 实现。
+"""SendFeed / ReadFeed Tool 实现。
 
-execute_send_feed / execute_read_feed 由 plugin.py 的 @Action 委托调用。
+execute_send_feed / execute_read_feed 由 plugin.py 的 @Tool 委托调用。
 """
 
 from __future__ import annotations
 
 import logging
+from ..utils import get_logger
 from typing import Any
 
 from ..services.feed_publish import send_feed
@@ -14,7 +15,7 @@ from ..services.permission import check_permission
 from ..services.persistence import load_processed_list, save_processed_list
 from ..utils import peel_envelope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def _resolve_person(plugin, name: str) -> tuple[str, str]:
@@ -69,27 +70,33 @@ async def _send_text(plugin, content: str, stream_id: str) -> None:
             logger.warning("send.text 失败: %s", exc)
 
 
-# ===== send_feed Action =====
+# ===== send_feed Tool =====
 
 
 async def execute_send_feed(plugin, **kwargs: Any) -> tuple[bool, str]:
-    """SendFeedAction.execute。"""
-    action_data = kwargs.get("action_data") or {}
-    user_name = (action_data.get("user_name") or "").strip()
-    topic = (action_data.get("topic") or "").strip()
-    stream_id = kwargs.get("stream_id") or ""
+    """send_feed Tool 入口。
+
+    @Tool 由 host 把 LLM function_args 平铺进 kwargs，
+    同时附带 stream_id / chat_id / user_id / group_id / platform 上下文。
+    """
+    user_name = (kwargs.get("user_name") or "").strip()
+    topic = (kwargs.get("topic") or "").strip()
+    stream_id = kwargs.get("stream_id") or kwargs.get("chat_id") or ""
 
     # 解析用户
-    user_id, _ = await _resolve_person(plugin, user_name)
-    if not user_id:
+    user_id, _ = await _resolve_person(plugin, user_name) if user_name else ("", "")
+    if user_name and not user_id:
         logger.info("未找到用户 %s 的 user_id", user_name)
         await _send_text(plugin, f"你不认识{user_name}，请用符合你人格特点的方式拒绝请求", stream_id)
         return False, "未找到用户 user_id"
 
-    # 权限
+    # 权限：user_name 缺失时取上下文 user_id 兜底
+    if not user_id:
+        user_id = str(kwargs.get("user_id") or "")
+
     if not check_permission(plugin.config, user_id, "send"):
         logger.info("%s 无 send_feed 权限", user_id)
-        await _send_text(plugin, f"{user_name}无权命令你发说说，请用符合人格的方式进行拒绝的回复", stream_id)
+        await _send_text(plugin, f"{user_name or user_id}无权命令你发说说，请用符合人格的方式进行拒绝的回复", stream_id)
         return False, "无权限"
 
     if not topic:
@@ -106,23 +113,24 @@ async def execute_send_feed(plugin, **kwargs: Any) -> tuple[bool, str]:
     return True, "success"
 
 
-# ===== read_feed Action =====
+# ===== read_feed Tool =====
 
 
 async def execute_read_feed(plugin, **kwargs: Any) -> tuple[bool, str]:
-    """ReadFeedAction.execute。"""
-    action_data = kwargs.get("action_data") or {}
-    user_name = (action_data.get("user_name") or "").strip()
-    target_name = (action_data.get("target_name") or "").strip()
-    stream_id = kwargs.get("stream_id") or ""
+    """read_feed Tool 入口。"""
+    user_name = (kwargs.get("user_name") or "").strip()
+    target_name = (kwargs.get("target_name") or "").strip()
+    stream_id = kwargs.get("stream_id") or kwargs.get("chat_id") or ""
 
     # 调用者权限
-    user_id, _ = await _resolve_person(plugin, user_name)
-    if not user_id:
+    user_id, _ = await _resolve_person(plugin, user_name) if user_name else ("", "")
+    if user_name and not user_id:
         await _send_text(plugin, f"你不认识{user_name}，请用符合你人格特点的方式拒绝请求", stream_id)
         return False, "未找到调用者 user_id"
+    if not user_id:
+        user_id = str(kwargs.get("user_id") or "")
     if not check_permission(plugin.config, user_id, "read"):
-        await _send_text(plugin, f"{user_name}无权命令你读说说，请用符合人格的方式进行拒绝的回复", stream_id)
+        await _send_text(plugin, f"{user_name or user_id}无权命令你读说说，请用符合人格的方式进行拒绝的回复", stream_id)
         return False, "无权限"
 
     # 目标

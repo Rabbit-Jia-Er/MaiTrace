@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
+from ..utils import get_logger
 from pathlib import Path
 from typing import Dict, List
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _PLUGIN_DIR = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PLUGIN_DIR / "data"

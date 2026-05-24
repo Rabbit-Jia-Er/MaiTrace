@@ -1,158 +1,138 @@
-"""图片获取（AI 生图 + 表情包）。"""
+"""图片获取（AI 生图 + 表情包）。
+
+AI 生图通过跨插件 API 调用麦麦绘卷（mais_art_journal）的 ``generate_image`` 公开 API。
+绘卷内部 pipeline 自带 prompt optimizer（中文 → 英文 SD prompt），
+本模块只把"自我形象 + 说说正文"拼成中文 prompt 透传给绘卷。
+
+新版（v3.1.1+）：
+
+- ``self_description`` 由 ``services.persona`` 注入，让生图也知道 bot 的外观
+- 绘卷返回 base64 后直接进 bytes 列表，不再"落盘 → 读回 → 删"
+- ``image.clear_image=false`` 时把生成的图归档一份到 ``data/images/``（仅留底）
+"""
 
 from __future__ import annotations
 
 import base64
 import datetime
 import logging
-import os
+from ..utils import get_logger
 import random
-from io import BytesIO
+import uuid
 from pathlib import Path
 from typing import Optional
-
-import httpx
-from PIL import Image
 
 from ..utils import peel_envelope as _peel
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+# 绘卷 API 命名空间（与 mais_art_journal/_manifest.json 的 id 对齐）
+_ART_PLUGIN_ID = "1021143806.mais_art_journal"
+_ART_GENERATE_IMAGE = f"{_ART_PLUGIN_ID}.generate_image"
+
+
+def _compose_image_prompt(self_description: str, message: str) -> str:
+    """把 self_description 和说说正文拼成给绘卷的 prompt。
+
+    self_description 为空时直接返回 message。否则放在前面让绘卷 prompt
+    optimizer 优先把形象信息编码进英文 SD prompt。
+    """
+    desc = (self_description or "").strip()
+    msg = (message or "").strip()
+    if not desc:
+        return msg
+    # 句末加句号方便 LLM 分段，但不重复加
+    if not desc.endswith(("。", ".", "！", "!", "？", "?")):
+        desc += "。"
+    if not msg:
+        return desc
+    return f"{desc} 场景：{msg}"
 
 
 # ============================================================
-# 麦麦绘卷 (mais_art_journal) 桥接：调对方的 generate_image_standalone
+# 麦麦绘卷桥接：ctx.api.call("...generate_image", ...)
 # ============================================================
 
 
 async def generate_image_via_pic_plugin(
     plugin,
     image_prompt: str,
-    image_dir: str,
     pic_plugin_model: str,
-) -> bool:
-    """通过麦麦绘卷生成图片，保存到 image_dir 下。"""
+    *,
+    archive_dir: str = "",
+) -> Optional[bytes]:
+    """通过麦麦绘卷生成一张图，直接返回 bytes。
+
+    Args:
+        plugin: MaiTracePlugin 实例。
+        image_prompt: 已拼好的中文/英文 prompt（绘卷会内部优化）。
+        pic_plugin_model: 绘卷 ``models.<id>``，对应 ``image.pic_plugin_model``。
+        archive_dir: 非空时把生成的图归档到该目录（``image.clear_image=false`` 用）。
+            空串=不落盘，调完直接返。
+
+    Returns:
+        Optional[bytes]: 成功返回图片 bytes；失败返回 ``None``。
+    """
+    if not image_prompt or not image_prompt.strip():
+        logger.warning("image_prompt 为空，跳过 AI 生图")
+        return None
+    if not pic_plugin_model:
+        logger.warning("未配置 image.pic_plugin_model，跳过 AI 生图")
+        return None
+
     try:
-        from plugins.mais_art_journal.core.api_clients import generate_image_standalone
-    except ImportError:
-        logger.warning("麦麦绘卷未安装，无法生图")
-        return False
-
-    # 读麦麦绘卷的配置
-    try:
-        # 新 SDK：通过 ctx.api 调对方插件的配置访问？目前更稳的是直接读 component_registry
-        from src.plugin_system.core import component_registry
-        from src.plugin_system.apis import config_api
-        pic_config = component_registry.get_plugin_config("mais_art_journal")
-        if not pic_config:
-            logger.warning("未找到麦麦绘卷配置")
-            return False
-        model_prefix = f"models.{pic_plugin_model}"
-        model_config: dict = {}
-        for key in (
-            "base_url", "api_key", "format", "model", "default_size", "seed",
-            "guidance_scale", "num_inference_steps", "watermark",
-            "custom_prompt_add", "negative_prompt_add", "artist", "support_img2img",
-        ):
-            val = config_api.get_plugin_config(pic_config, f"{model_prefix}.{key}", None)
-            if val is not None:
-                model_config[key] = val
-        if not model_config.get("base_url") or not model_config.get("model"):
-            logger.warning("麦麦绘卷模型 %s 配置不完整", pic_plugin_model)
-            return False
-
-        # 注入 selfie 参考图
-        try:
-            bot_appearance = config_api.get_plugin_config(pic_config, "selfie.prompt_prefix", "")
-            reference_image_path = (config_api.get_plugin_config(pic_config, "selfie.reference_image_path", "") or "").strip()
-        except Exception:
-            bot_appearance = ""
-            reference_image_path = ""
-
-        if bot_appearance:
-            image_prompt = f"{bot_appearance}, {image_prompt}"
-
-        reference_image_b64: Optional[str] = None
-        strength: Optional[float] = None
-        if reference_image_path:
-            try:
-                if not os.path.isabs(reference_image_path):
-                    art_plugin_dir = os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                        "mais_art_journal",
-                    )
-                    reference_image_path = os.path.join(art_plugin_dir, reference_image_path)
-                if os.path.exists(reference_image_path):
-                    with open(reference_image_path, "rb") as f:
-                        reference_image_b64 = base64.b64encode(f.read()).decode("utf-8")
-                    if model_config.get("support_img2img", True):
-                        strength = 0.6
-                    else:
-                        reference_image_b64 = None
-            except Exception as exc:
-                logger.debug("加载自拍参考图失败: %s", exc)
-
-        size = model_config.get("default_size", "1024x1024")
-        success, image_data = await generate_image_standalone(
+        result = await plugin.ctx.api.call(
+            _ART_GENERATE_IMAGE,
             prompt=image_prompt,
-            model_config=model_config,
-            size=size,
-            negative_prompt=None,
-            strength=strength,
-            input_image_base64=reference_image_b64,
-            max_retries=2,
+            model_id=pic_plugin_model,
+            use_cache=False,
         )
-        if not success or not image_data:
-            logger.warning("pic_plugin 生图失败: %s", image_data)
-            return False
-
-        Path(image_dir).mkdir(parents=True, exist_ok=True)
-        save_path = Path(image_dir) / "pic_plugin_0.png"
-        if image_data.startswith("http"):
-            async with httpx.AsyncClient() as client:
-                img_response = await client.get(image_data, timeout=60.0)
-                img_response.raise_for_status()
-                image = Image.open(BytesIO(img_response.content))
-                image.save(save_path)
-        else:
-            img_bytes = base64.b64decode(image_data)
-            image = Image.open(BytesIO(img_bytes))
-            image.save(save_path)
-
-        logger.info("pic_plugin 生成图片已保存: %s", save_path)
-        return True
     except Exception as exc:
-        logger.error("pic_plugin 生图异常: %s", exc, exc_info=True)
-        return False
+        logger.error("调用绘卷 generate_image 异常: %s", exc, exc_info=True)
+        return None
 
+    result = _peel(result)
+    if not isinstance(result, dict):
+        logger.warning("绘卷 generate_image 返回非 dict: %s", type(result).__name__)
+        return None
+    if not result.get("success"):
+        logger.warning("绘卷 generate_image 失败: %s", result.get("error", "未知"))
+        return None
 
-async def optimize_image_prompt(plugin, message: str, personality: str) -> Optional[str]:
-    """生成图片描述：优先 PromptOptimizer，失败回退到 LLM 自身。"""
-    # 优先：麦麦绘卷的 PromptOptimizer
+    image_b64 = result.get("image_base64", "")
+    if not image_b64:
+        logger.warning("绘卷返回 success 但 image_base64 为空")
+        return None
+
     try:
-        from plugins.mais_art_journal.core.utils import PromptOptimizer
-        optimizer = PromptOptimizer(log_prefix="[MaiTrace.feed_image]")
-        success, image_prompt = await optimizer.optimize(message)
-        if success and image_prompt:
-            return image_prompt
-    except ImportError:
-        pass
+        img_bytes = base64.b64decode(image_b64)
     except Exception as exc:
-        logger.debug("PromptOptimizer 异常: %s", exc)
+        logger.error("解码绘卷返回的 base64 失败: %s", exc)
+        return None
 
-    # 兜底：自己走 ctx.llm
-    from .prompts import build_image_prompt
-    from .llm_runner import LLMRunner
-    runner = LLMRunner(
-        plugin.ctx,
-        plugin.config.llm.text_model,
-        timeout=plugin.config.llm.llm_timeout_seconds,
+    logger.info(
+        "绘卷生图成功 (model=%s, size=%s, %d bytes)",
+        result.get("model_id", ""),
+        result.get("size", ""),
+        len(img_bytes),
     )
-    prompt = build_image_prompt(plugin, message, personality)
-    success, image_prompt = await runner.generate(prompt, temperature=0.3)
-    if success and image_prompt:
-        return image_prompt
-    return None
+
+    # 可选归档（clear_image=false 时调用方传入 archive_dir）
+    if archive_dir:
+        try:
+            Path(archive_dir).mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = uuid.uuid4().hex[:8]
+            save_path = Path(archive_dir) / f"pic_plugin_{stamp}_{suffix}.png"
+            with save_path.open("wb") as f:
+                f.write(img_bytes)
+            logger.info("归档生图副本: %s", save_path)
+        except OSError as exc:
+            logger.warning("归档失败（图片仍会发出）: %s", exc)
+
+    return img_bytes
 
 
 # ============================================================
@@ -194,18 +174,25 @@ async def get_emoji_image(plugin, description: str) -> Optional[bytes]:
 async def collect_images_for_feed(
     plugin,
     message: str,
-    personality: str,
-) -> tuple[list[bytes], list[str]]:
-    """根据 send.* 配置收集图片。
+    *,
+    self_description: str = "",
+) -> list[bytes]:
+    """按 ``image.*`` 配置收集图片，直接返回 bytes 列表。
+
+    Args:
+        plugin: MaiTracePlugin 实例。
+        message: 说说正文。会拼到生图 prompt 的"场景"部分。
+        self_description: bot 自我形象描述（中文）。非空时会拼到生图 prompt
+            最前面，让绘卷 prompt optimizer 把形象一起编码进英文 SD prompt。
 
     Returns:
-        (image_bytes_list, generated_file_paths) — 后者用于上传后清理本地文件。
+        list[bytes]: 生成的图片 bytes 列表（每张图一项）。AI 生图失败 / 表情包
+        匹配失败时该项会被跳过，返回空列表代表本次发纯文本。
     """
     images: list[bytes] = []
-    done_paths: list[str] = []
 
     if not plugin.config.image.enable_image:
-        return images, done_paths
+        return images
 
     image_mode = plugin.config.image.image_mode
     image_number = max(1, min(4, plugin.config.image.image_number))
@@ -222,47 +209,32 @@ async def collect_images_for_feed(
         pic_plugin_model = plugin.config.image.pic_plugin_model
         if not pic_plugin_model:
             logger.warning("未配置 image.pic_plugin_model，无法生 AI 图，将发纯文本")
-            return images, done_paths
+            return images
 
-        image_prompt = await optimize_image_prompt(plugin, message, personality)
-        if not image_prompt:
-            logger.warning("生成图片提示词失败，将发纯文本")
-            return images, done_paths
+        image_prompt = _compose_image_prompt(self_description, message)
+        logger.info(
+            "使用绘卷生成配图: model=%s prompt=%s",
+            pic_plugin_model, image_prompt[:80],
+        )
 
-        from .persistence import get_images_dir
-        image_dir = str(get_images_dir())
-        logger.info("使用 pic_plugin 生成配图: %s", image_prompt)
-        ok = await generate_image_via_pic_plugin(plugin, image_prompt, image_dir, pic_plugin_model)
-        if not ok:
-            return images, done_paths
+        # clear_image=false 时归档历史副本，true 时不落盘
+        archive_dir = ""
+        if not plugin.config.image.clear_image:
+            from .persistence import get_images_dir
+            archive_dir = str(get_images_dir())
 
-        # 把所有未处理图片读出来 + 重命名为 done_*
-        all_files = [f for f in os.listdir(image_dir) if os.path.isfile(os.path.join(image_dir, f))]
-        unprocessed = sorted(f for f in all_files if not f.startswith("done_"))
-        for image_file in unprocessed:
-            full = os.path.join(image_dir, image_file)
-            with open(full, "rb") as f:
-                images.append(f.read())
-            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_path = os.path.join(image_dir, f"done_{stamp}_{image_file}")
-            os.rename(full, new_path)
-            done_paths.append(new_path)
+        # 按 image_number 多次调用（绘卷 generate_image 一次返回一张图）
+        for _ in range(image_number):
+            img_bytes = await generate_image_via_pic_plugin(
+                plugin, image_prompt, pic_plugin_model,
+                archive_dir=archive_dir,
+            )
+            if img_bytes:
+                images.append(img_bytes)
     else:
         for _ in range(image_number):
             img = await get_emoji_image(plugin, message)
             if img:
                 images.append(img)
 
-    return images, done_paths
-
-
-def cleanup_done_paths(plugin, done_paths: list[str]) -> None:
-    """根据 image.clear_image 配置决定是否删除已上传的图片。"""
-    if not plugin.config.image.clear_image:
-        return
-    for path in done_paths:
-        try:
-            os.remove(path)
-            logger.info("已删除图片: %s", path)
-        except OSError as exc:
-            logger.warning("删除图片失败 %s: %s", path, exc)
+    return images

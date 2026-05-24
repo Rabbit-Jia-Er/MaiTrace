@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import logging
+from ...utils import get_logger
 from typing import Dict
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+def _self_line(self_description: str) -> str:
+    """构造"自我形象"的开头行。空则返回空串。"""
+    desc = (self_description or "").strip()
+    if not desc:
+        return ""
+    if not desc.endswith(("。", ".", "！", "!", "？", "?")):
+        desc += "。"
+    return f"\n关于我的形象：{desc}"
 
 
 def build_diary_prompt(
@@ -17,10 +28,12 @@ def build_diary_prompt(
     personality_desc: str,
     style_desc: str,
     name: str,
+    self_description: str = "",
 ) -> str:
     """日记体 prompt。"""
     name_line = f"\n我的名字是{name}" if name else ""
-    return f"""{name_line}
+    self_line = _self_line(self_description)
+    return f"""{name_line}{self_line}
 我{personality_desc}
 
 今天是{date},回顾一下到现在为止的聊天记录:
@@ -53,10 +66,12 @@ def build_qqzone_prompt(
     personality_desc: str,
     style_desc: str,
     name: str,
+    self_description: str = "",
 ) -> str:
     """说说体 prompt。"""
     name_line = f"\n我的名字是{name}" if name else ""
-    return f"""{name_line}
+    self_line = _self_line(self_description)
+    return f"""{name_line}{self_line}
 我{personality_desc}
 今天日期与天气是：{date_with_weather}
 今天看到了一些聊天内容，其中也有我自己的发言：

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from ..utils import get_logger
 from typing import Literal
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 Section = Literal["send", "read"]
 

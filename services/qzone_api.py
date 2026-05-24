@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from ..utils import get_logger
 import time
 from typing import Any, Awaitable, Callable, Optional
 
@@ -22,7 +23,7 @@ import bs4
 import httpx
 import json5
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 ImageDescriptionProvider = Callable[[str], Awaitable[str]]

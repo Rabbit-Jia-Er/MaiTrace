@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from ...utils import get_logger
 import os
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from ...utils.date import format_date_str
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DiaryStorage:
