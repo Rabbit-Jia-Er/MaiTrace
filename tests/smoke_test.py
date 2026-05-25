@@ -325,7 +325,7 @@ def test_config_sections():
 def test_manifest():
     import json
     manifest = json.loads((_PLUGIN_DIR / "_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "3.1.0", f"version 应 3.1.0，实际 {manifest['version']}"
+    assert manifest["version"].startswith("3.1."), f"version 应 3.1.x，实际 {manifest['version']}"
     assert manifest["host_application"]["max_version"] != "1.0.0", "host max 不能写死 1.0.0"
     caps = set(manifest["capabilities"])
     for cap in ("chat.get_stream_by_user_id", "api.call"):

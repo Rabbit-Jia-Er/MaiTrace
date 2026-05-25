@@ -51,14 +51,8 @@ cookie_methods = ["adapter", "napcat", "clientkey", "qrcode", "local"]
 
 | 插件 | 作用 | 必需？ |
 |---|---|---|
-| [`maibot-team_napcat-adapter`](../maibot-team_napcat-adapter) | 通过 napcat-adapter API 取 cookie（最稳） | 否（可走 napcat HTTP / clientkey / qrcode） |
-| [`mais_art_journal`](../mais_art_journal)（麦麦绘卷） | AI 配图，含 `[selfie].prompt_prefix` 形象 / `reference_image_path` 参考图 | 否（可只用表情包配图） |
-| [`xuqian13_autonomous-planning-plugin-v4`](../xuqian13_autonomous-planning-plugin-v4) | Routine 日程数据来源 | 否（不装时 Routine 永远"无活动"，不发不刷） |
-
-
-**依赖**:
-- `autonomous_planning` 插件（ https://github.com/xuqian13/autonomous_planning_plugin ）  — 提供日程数据（当前活动）
-- `MaiTrace` 插件（ https://github.com/Rabbit-Jia-Er/MaiTrace ） — 发布到 QQ 空间
+| [`mais_art_journal`] 插件（ https://github.com/1021143806/mais_art_journal ）（麦麦绘卷） | AI 配图，含 `[selfie].prompt_prefix` 形象 / `reference_image_path` 参考图 | 否（可只用表情包配图） |
+| [`xuqian13_autonomous-planning-plugin-v4`] 插件（ https://github.com/xuqian13/autonomous_planning_plugin ） | Routine 日程数据来源 | 否（不装时 Routine 永远"无活动"，不发不刷） |
 
 ---
 
@@ -115,78 +109,6 @@ await self.ctx.api.call(
 
 ---
 
-## 配图链路（重点）
-
-```
-说说正文 story
-    │
-    ├─ persona = resolve_persona(plugin)
-    │      reference_image_path ← 绘卷 [selfie].reference_image_path 解析为绝对路径
-    │
-    └─ collect_images_for_feed(story, reference_image_path=...)
-         │
-         ├─ AI 路径（image.image_mode = only_ai / random 命中）
-         │   ├─ 读参考图 → base64
-         │   └─ ctx.api.call("绘卷.generate_image",
-         │          prompt        = story（场景，会被 SELFIE_SCENE_SYSTEM_PROMPT 优化）,
-         │          selfie_mode   = True     ← 让绘卷走 selfie 流程
-         │          selfie_style  = image.selfie_style（默认 "photo" 第三人称）,
-         │          input_image_base64 = 参考图 base64    ← img2img
-         │       )
-         │
-         │   绘卷内部：
-         │     - 形象 ← [selfie].prompt_prefix（不被优化器改写）
-         │     - 自动加 (1girl:1.4)(perfect hands:1.2) + 手部动作描述
-         │     - 场景 ← 优化为英文 SD 标签
-         │     - 模型不支持 img2img → silent_img2img_fallback 自动降级 txt2img
-         │
-         └─ emoji 路径（image_mode = only_emoji / random 未中）
-             ctx.emoji.get_by_description(description=story)
-```
-
-**关键设计**：
-- **形象不被优化器改写** —— 走 `selfie_mode=True` 让绘卷用 `SELFIE_SCENE_SYSTEM_PROMPT`（明确禁止改外观），不是默认的 `OPTIMIZER_SYSTEM_PROMPT`（重写整段）
-- **MaiTrace 主动传参考图** —— 绘卷 `generate_image` API 不会自动读 `[selfie].reference_image_path`（这是 `/dr` 命令路径独有），必须 MaiTrace 主动 `input_image_base64`
-- **视角可配** —— `[image].selfie_style` 默认 `photo`（第三人称，适合叙事说说配图），可改 `standard`（前置自拍）/ `mirror`（对镜自拍）
-
----
-
-## Routine 严格决策
-
-```
-活动来源：ctx.api.call("xuqian13.autonomous-planning-plugin-v4.get_current_activity")
-
-每 check_interval_minutes 分钟跑一次：
-
-  1. 冷却 (post_cooldown_minutes / browse_cooldown_minutes)
-       └─ 时间未到 → 拒（reason="冷却中"）
-
-  2. 硬规则
-       ├─ respect_silent_hours=true 且当前在 monitor.silent_hours 内 → 拒
-       └─ activity_type 在 post/browse_blocked_activities 列表中 → 拒
-       默认黑名单：sleeping / working / studying / eating / exercising
-
-  3. LLM 严格判定
-       prompt 含清单式"绝对不会"+"才可以"
-       require_reason=true 时强制 "是|理由" / "否|理由" 格式
-       严格解析：首字符必须是 "是" 或 "否"
-
-  4. 二次掷骰
-       max_post_chance / max_browse_chance < 1.0 时
-       LLM 通过后再 random() > chance → 拒
-```
-
-`/zn debug routine` 输出示例：
-```
-最近 5 次 Routine 决策：
-  23:45 [post]   sleeping:睡觉   → 硬规则拒绝 (活动黑名单(sleeping))
-  23:25 [browse] sleeping:睡觉   → 硬规则拒绝 (静默时段(22:00-07:00))
-  20:45 [post]   relaxing:看小说 → ✓ 已执行 (有想分享的轻小说)
-  18:05 [post]   eating:晚饭     → 硬规则拒绝 (活动黑名单(eating))
-```
-
----
-
 ## 配置一览
 
 完整字段见 `config.toml` 注释或 WebUI 配置页（每段都有 `label / hint / depends_on` 元数据）。
@@ -218,6 +140,8 @@ await self.ctx.api.call(
 | `pic_plugin_model` | `""` | 绘卷 `models.<id>`；留空禁用 AI |
 | `clear_image` | `true` | 上传后是否删本地副本（false 时归档到 `data/images/`） |
 | `selfie_style` ⭐v3.1.5 | `photo` | 绘卷 selfie 视角：`photo`(第三人称) / `standard`(前置自拍) / `mirror`(对镜) |
+
+> **⚠️ host RPC 30 秒上限**：MaiTrace 调绘卷走 `ctx.api.call`，host 端 30 秒硬超时。豆包 `seedream-4-5` 等模型生 2560×1440 实测约 31s+，会导致**说说发出但无配图**（日志：`feed_image | 调用绘卷 generate_image 异常: [E_TIMEOUT]`）。解决：在**绘卷**配置里把 `[models].<id>.default_size` 改为 `1024x1024`（通常 10s 内），或换更快的绘图模型。
 
 ### `[read]` 读说说 / 评论
 | 项 | 默认 | 说明 |
@@ -287,117 +211,18 @@ await self.ctx.api.call(
 
 ---
 
-## 测试
-
-### 一键 smoke（31 用例，30 秒）
-
-```shell
-.venv/Scripts/python.exe plugins/MaiTrace/tests/smoke_test.py
-```
-
-覆盖：
-- **[A] 静态**：语法 / 组件注册 / 配置完整 / manifest / 无 DeprecationWarning
-- **[B] persona**：baseline / 用户优先 / 绘卷兜底 / 参考图路径 / 缺失文件降级 / 风格抽样 / system_prefix
-- **[C] 配图**：AI 路径 (selfie_mode + photo) / img2img with reference / selfie_style 可配 / emoji 路径 / 归档 / disabled
-- **[D] 日记**：timeline 截断 / prompt 含 self_description
-- **[E] Routine**：规划 API 3 + 决策解析 / 活动黑名单 / 静默 / 掷骰 / 时间窗（共 8）
-- **[F] 跨插件 API**：publish_topic_api 契约
-- **[G] 命令权限**：is_admin / admin 覆盖所有 /zn 子命令
-
-### 线上手动验证
-
-启动 MaiBot 后按顺序：
-
-1. `/zn debug cookie` — Cookie 状态
-2. `/zn debug routine` — 决策历史
-3. `/zn 今天阳台的花开了` — 真发说说，看日志是否 `style=photo mode=img2img`
-4. `/zn gen 今天` — 生成日记并发布
-5. 非 admin QQ 发 `/zn help` — 应被拒
-
----
-
-## 目录结构
-
-```
-plugins/MaiTrace/
-├── _manifest.json
-├── plugin.py                # MaiBotPlugin 入口（@Command/@Tool/@API 装饰器）
-├── config.py                # PluginConfigBase × 10 sections
-├── README.md
-├── data/                    # 运行时数据
-│   ├── cookies-<uin>.json   # cookie 持久化
-│   ├── cookie_stats.json    # cookie 各方式成功率
-│   ├── processed_list.json  # 已处理说说去重
-│   ├── processed_comments.json
-│   ├── diaries/             # 日记 JSON 文件
-│   ├── diary_index.json
-│   └── qrcode.png           # 扫码登录用
-├── images/                  # AI 图归档（clear_image=false 时）
-├── services/                # 业务层
-│   ├── persona.py           # ⭐ 统一人格加载
-│   ├── cookie.py            # 5 种 cookie 获取，自适应重排
-│   ├── qzone_api.py         # QzoneAPI HTTP 客户端
-│   ├── feed_publish.py      # 发说说主流程
-│   ├── feed_read.py         # 读说说 + 评论/点赞
-│   ├── feed_image.py        # ⭐ 配图（selfie_mode + img2img）
-│   ├── monitor.py           # 刷空间 + 多层链式回复
-│   ├── routine.py           # ⭐ 严格决策四层防线
-│   ├── persistence.py       # processed_* / cookie_stats 持久化
-│   ├── permission.py        # 权限：check_permission / is_admin
-│   ├── prompts.py           # send/read/reply 模板（注入 self_description）
-│   ├── llm_runner.py        # ctx.llm.generate 包装
-│   └── diary/
-│       ├── pipeline.py      # 抓消息 → timeline → prompt → LLM → 落库 → 发布
-│       ├── storage.py
-│       ├── timeline.py      # per_message_max_chars 可配
-│       ├── prompts.py       # diary/qqzone/custom 模板
-│       └── fetcher.py       # ctx.message + 白/黑名单
-├── handlers/                # 表现层（薄壳分发）
-│   ├── commands.py          # /zn 子命令（统一 admin 检查）
-│   ├── actions.py           # send_feed / read_feed Tool 实现
-│   └── apis.py              # 3 个跨插件 @API 实现
-├── utils/
-│   ├── _envelope.py         # ctx 返回值剥壳
-│   ├── _logging.py          # ⭐ plugin.<id>.* 命名空间 logger
-│   ├── ctx_config.py        # ⭐ get_global_* 统一 helper
-│   ├── date.py
-│   ├── time_window.py
-│   └── tokens.py
-└── tests/
-    └── smoke_test.py        # 31 个离线用例
-```
-
----
-
-## 从老版本升级
-
-### v2.5 → v3.0
-
-1. **配置段改名**：旧 `[diary.model]` → `[diary_model]`（pydantic v2 保留前缀冲突）。备份旧 `config.toml` → 删除 → 重启重新生成 → 把旧 `[diary.model]` 内容粘到新 `[diary_model]`。
-2. **数据迁移**：旧 `processed_list.json` / `qzone/cookies-*.json` / `qzone/qrcode.png` 加载时自动 move 到 `data/`。
-3. **`adapter` cookie 方式**：默认列表新增 `"adapter"`（通过 napcat-adapter 插件 API），放第一位最稳。
-
-### v3.0 → v3.1+
-
-完全向后兼容，但行为变化（自动配置迁移已处理；下面是行为差异）：
-
-1. **`@Action` → `@Tool`** —— SDK 2.x 标准。功能等价。
-2. **`[persona]` 新增段** —— 默认行为不破坏旧体验：未填 `self_description` 时自动从绘卷 `[selfie].prompt_prefix` 兜底。
-3. **`routine.respect_silent_hours` 默认 `true`** —— `monitor.silent_hours` 现在也卡发说说/刷空间，**比 v3.0 更严**。要回旧行为设 `false`。
-4. **活动黑名单默认开启** —— `routine.post_blocked_activities` / `browse_blocked_activities` 默认含 `sleeping / working / studying / eating / exercising`，命中直接拒、不调 LLM。
-5. **timeline 单条消息截断**：原硬编码 50 字 → `diary.per_message_max_chars`（默认 200）。
-6. **Routine 不再直读 sqlite** —— 改用 `ctx.api.call("xuqian13.autonomous-planning-plugin-v4.get_current_activity")`，需安装 v4 规划插件。
-7. **⚠️ v3.1.2 命令权限破坏性变更** —— 所有 `/zn` 命令（含原本任何人能用的 `help` / `v` / `<日期>`）现在要求 `[plugin].admin_qq` 在列表。升级后必须先填 `admin_qq`，否则命令全不能用。
-
----
-
 ## 贡献和反馈
 
-- Issue / PR 欢迎提交
-- 联系 QQ：1523640161 / 3082618311
+- **制作者水平有限，任何漏洞、疑问或建议,欢迎提交 Issue 和 Pull Request！**
+- **或联系QQ：3082618311**
+- **其余问题请联系作者修复或解决（部分好友请求可能被过滤导致回复不及时，请见谅）**
+
+---
 
 ## 鸣谢
 
-[MaiBot](https://github.com/MaiM-with-u/MaiBot) · [qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit) · [diary_plugin](https://github.com/bockegai/diary_plugin) · 老版本作者 [internetsb/Maizone](https://github.com/internetsb/Maizone)
+[MaiBot](https://github.com/MaiM-with-u/MaiBot)
 
-特别感谢 [xc94188](https://github.com/xc94188) / [myxxr](https://github.com/myxxr) / [UnCLAS-Prommer](https://github.com/UnCLAS-Prommer) / [XXXxx7258](https://github.com/XXXxx7258) / [heitiehu-beep](https://github.com/heitiehu-beep) 等贡献。
+部分代码来自仓库：[qzone-toolkit](https://github.com/gfhdhytghd/qzone-toolkit) · [diary_plugin](https://github.com/bockegai/diary_plugin) · [Maizone](https://github.com/internetsb/Maizone)  
+
+特别感谢[xc94188](https://github.com/xc94188)、[myxxr](https://github.com/myxxr)、[UnCLAS-Prommer](https://github.com/UnCLAS-Prommer)、[XXXxx7258](https://github.com/XXXxx7258)、[heitiehu-beep](https://github.com/heitiehu-beep)提供的功能改进
