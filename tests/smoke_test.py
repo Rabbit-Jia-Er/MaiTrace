@@ -378,6 +378,23 @@ async def test_persona_art_fallback_default():
     assert "silver hair" in persona.self_description, f"绘卷兜底未生效: {persona.self_description!r}"
 
 
+async def test_persona_reference_image_path():
+    """reference_image_path 绝对路径 + 文件存在 → 进 Persona。"""
+    test_file = os.path.abspath(__file__)
+    p = _make_plugin(art_reference_path=test_file)
+    from MaiTrace.services.persona import resolve_persona
+    persona = await resolve_persona(p)
+    assert persona.reference_image_path == test_file, persona.reference_image_path
+
+
+async def test_persona_reference_image_missing():
+    """reference_image_path 指向不存在的文件 → 安全降级为空。"""
+    p = _make_plugin(art_reference_path="/tmp/definitely_not_exist_xxx.jpg")
+    from MaiTrace.services.persona import resolve_persona
+    persona = await resolve_persona(p)
+    assert persona.reference_image_path == ""
+
+
 # ============================================================
 # 测试 9. resolve_persona - multiple_reply_style 抽样
 # ============================================================
@@ -428,30 +445,63 @@ async def test_persona_system_prefix():
 
 
 async def test_collect_images_ai_path():
-    """AI 路径：调绘卷只传场景（message），且传 selfie_mode=True。"""
+    """AI 路径：调绘卷只传场景，selfie_mode=True，默认 selfie_style=photo。"""
     p = _make_plugin()
     p.config.image.enable_image = True
     p.config.image.image_mode = "only_ai"
     p.config.image.image_number = 2
     p.config.image.pic_plugin_model = "model1"
-    p.config.image.clear_image = True  # 不归档
+    p.config.image.clear_image = True
 
     from MaiTrace.services.feed_image import collect_images_for_feed
     images = await collect_images_for_feed(p, "今天泡澡好舒服")
-    assert len(images) == 2, f"应返 2 张图，实际 {len(images)}"
+    assert len(images) == 2
     assert all(b == FAKE_PNG for b in images)
     api_calls = p.ctx.api.calls
     assert len(api_calls) == 2
     for c in api_calls:
         assert c["name"] == "1021143806.mais_art_journal.generate_image"
-        # prompt 只是场景，不含 self_description / "场景：" 拼接
         assert c["kwargs"]["prompt"] == "今天泡澡好舒服"
-        # 始终传 selfie_mode=True 让绘卷走 selfie 流程
         assert c["kwargs"]["selfie_mode"] is True
-        assert c["kwargs"]["selfie_style"] == "standard"
-        # 不应再传 input_image_base64（绘卷自己读 selfie.reference_image_path）
+        # 默认 selfie_style=photo（第三人称）
+        assert c["kwargs"]["selfie_style"] == "photo"
+        # 没传 reference → 不应有 input_image_base64
         assert "input_image_base64" not in c["kwargs"]
-        assert "strength" not in c["kwargs"]
+
+
+async def test_collect_images_img2img_with_reference():
+    """传 reference_image_path → 读文件转 base64 + input_image_base64。"""
+    p = _make_plugin()
+    p.config.image.enable_image = True
+    p.config.image.image_mode = "only_ai"
+    p.config.image.image_number = 1
+    p.config.image.pic_plugin_model = "model1"
+    p.config.image.clear_image = True
+
+    ref_path = os.path.abspath(__file__)
+    expected_b64 = base64.b64encode(open(ref_path, "rb").read()).decode("ascii")
+
+    from MaiTrace.services.feed_image import collect_images_for_feed
+    await collect_images_for_feed(p, "场景", reference_image_path=ref_path)
+    call = p.ctx.api.calls[0]
+    assert call["kwargs"]["input_image_base64"] == expected_b64
+    assert call["kwargs"]["selfie_mode"] is True
+    assert call["kwargs"]["selfie_style"] == "photo"
+
+
+async def test_collect_images_selfie_style_configurable():
+    """[image].selfie_style 可改成 standard/mirror。"""
+    p = _make_plugin()
+    p.config.image.enable_image = True
+    p.config.image.image_mode = "only_ai"
+    p.config.image.image_number = 1
+    p.config.image.pic_plugin_model = "model1"
+    p.config.image.clear_image = True
+    p.config.image.selfie_style = "mirror"
+
+    from MaiTrace.services.feed_image import collect_images_for_feed
+    await collect_images_for_feed(p, "场景")
+    assert p.ctx.api.calls[0]["kwargs"]["selfie_style"] == "mirror"
 
 
 async def test_collect_images_emoji():
@@ -463,7 +513,7 @@ async def test_collect_images_emoji():
     from MaiTrace.services.feed_image import collect_images_for_feed
     images = await collect_images_for_feed(p, "哈哈")
     assert len(images) == 3
-    assert len(p.ctx.api.calls) == 0, "emoji 路径不应调绘卷 API"
+    assert len(p.ctx.api.calls) == 0
 
 
 async def test_collect_images_archive():
@@ -472,7 +522,7 @@ async def test_collect_images_archive():
     p.config.image.image_mode = "only_ai"
     p.config.image.image_number = 2
     p.config.image.pic_plugin_model = "model1"
-    p.config.image.clear_image = False  # 归档
+    p.config.image.clear_image = False
 
     from MaiTrace.services.persistence import get_images_dir
     archive = get_images_dir()
@@ -483,7 +533,7 @@ async def test_collect_images_archive():
     from MaiTrace.services.feed_image import collect_images_for_feed
     await collect_images_for_feed(p, "归档测试")
     archived = [f for f in os.listdir(archive) if f.startswith("pic_plugin_")]
-    assert len(archived) == 2, f"应归档 2 张，实际 {len(archived)}"
+    assert len(archived) == 2
     for f in archived:
         os.remove(archive / f)
 
@@ -884,11 +934,15 @@ def main():
     _run("persona baseline", test_persona_baseline)
     _run("persona user self_description first", test_persona_user_self_description)
     _run("persona art selfie fallback (default on)", test_persona_art_fallback_default)
+    _run("persona reference_image_path absolute", test_persona_reference_image_path)
+    _run("persona reference_image missing → empty", test_persona_reference_image_missing)
     _run("persona multiple_reply_style sampling", test_persona_style_sampling)
     _run("persona system_prefix concat", test_persona_system_prefix)
 
     print("\n[C] 配图生成")
-    _run("images: AI path (selfie_mode + scene only)", test_collect_images_ai_path)
+    _run("images: AI path (selfie_mode + photo by default)", test_collect_images_ai_path)
+    _run("images: img2img with reference", test_collect_images_img2img_with_reference)
+    _run("images: selfie_style configurable", test_collect_images_selfie_style_configurable)
     _run("images: emoji path skips art api", test_collect_images_emoji)
     _run("images: clear_image=False archives", test_collect_images_archive)
     _run("images: enable_image=False empty", test_collect_images_disabled)

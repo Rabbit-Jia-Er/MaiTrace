@@ -283,6 +283,21 @@ class ImageSection(PluginConfigBase):
             "order": 7,
         },
     )
+    selfie_style: Literal["standard", "mirror", "photo"] = Field(
+        default="photo",
+        description=(
+            "传给绘卷的 selfie_style 视角风格。standard=前置自拍 / mirror=对镜自拍 / "
+            "photo=第三人称照片。说说配图通常是叙事场景，建议 photo。"
+            "想让图是麦麦自己举着手机自拍的视角则改 standard / mirror。"
+        ),
+        json_schema_extra={
+            "label": "自拍视角",
+            "hint": "photo=第三人称（推荐）/ standard=前置自拍 / mirror=对镜自拍",
+            "depends_on": "image.enable_image",
+            "depends_value": True,
+            "order": 8,
+        },
+    )
 
 
 class ReadSection(PluginConfigBase):

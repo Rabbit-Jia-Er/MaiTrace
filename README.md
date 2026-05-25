@@ -154,8 +154,9 @@ Cookie 方式：
 | `image_number` | `1` | 每条说说几张图（1-4） |
 | `pic_plugin_model` | `""` | 绘卷 `models.<id>`，留空禁用 AI 生图 |
 | `clear_image` | `true` | 上传后是否删除本地副本；`false` 时归档到 `data/images/` |
+| `selfie_style` ⭐v3.1.5 | `photo` | 绘卷 selfie 视角：`photo`=第三人称（推荐）/ `standard`=前置自拍 / `mirror`=对镜自拍 |
 
-> 注：调绘卷 API 时本插件直接传**说说正文 + persona.self_description**作为 prompt，绘卷内部 `prompt_optimizer` 会把中文自动转为英文 SD prompt。
+> **配图链路**：MaiTrace 调绘卷 `generate_image` 时始终传 `selfie_mode=True`；形象 prompt 由绘卷自己的 `[selfie].prompt_prefix` 提供（**不被优化器改写**）；参考图由 MaiTrace 读绘卷 `[selfie].reference_image_path` 转 base64 主动传给绘卷的 `input_image_base64`（让 model3 这种支持图生图的模型走 img2img；不支持则绘卷 `silent_img2img_fallback=True` 自动降级 txt2img）；视角由 `[image].selfie_style` 控制。
 
 ### `[read]`（读说说 / 评论）
 | 项 | 默认 | 说明 |
