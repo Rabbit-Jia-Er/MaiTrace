@@ -1,8 +1,6 @@
 # MaiTrace（麦时迹）
 
-MaiBot 的 QQ 空间插件 —— 发说说、刷空间、自动评论点赞、回复评论、写日记，由日程驱动智能决策。
-
-> 基于 `maibot_sdk` 2.x（manifest v2 / `@Tool` / `@Command` / `@API` / 强类型配置 / `ctx.*` 能力代理）。从 `internetsb/Maizone` v2.5 演进，重写为分层架构（services / handlers / utils），新增 persona 系统、跨插件 API、Routine 严格决策、admin 权限、测试基础设施。
+属于 MaiBot 自己的 QQ 空间生活插件。让麦麦自主发说说、刷动态、点赞回复、写日记，留下属于麦麦自己的时间足迹。
 
 ---
 
@@ -49,13 +47,18 @@ admin_qq = ["你的QQ"]    # 必填，否则所有 /zn 命令被拒
 cookie_methods = ["adapter", "napcat", "clientkey", "qrcode", "local"]
 ```
 
-### 推荐周边插件
+### 推荐周边插件（依赖）
 
 | 插件 | 作用 | 必需？ |
 |---|---|---|
 | [`maibot-team_napcat-adapter`](../maibot-team_napcat-adapter) | 通过 napcat-adapter API 取 cookie（最稳） | 否（可走 napcat HTTP / clientkey / qrcode） |
 | [`mais_art_journal`](../mais_art_journal)（麦麦绘卷） | AI 配图，含 `[selfie].prompt_prefix` 形象 / `reference_image_path` 参考图 | 否（可只用表情包配图） |
 | [`xuqian13_autonomous-planning-plugin-v4`](../xuqian13_autonomous-planning-plugin-v4) | Routine 日程数据来源 | 否（不装时 Routine 永远"无活动"，不发不刷） |
+
+
+**依赖**:
+- `autonomous_planning` 插件（ https://github.com/xuqian13/autonomous_planning_plugin ）  — 提供日程数据（当前活动）
+- `MaiTrace` 插件（ https://github.com/Rabbit-Jia-Er/MaiTrace ） — 发布到 QQ 空间
 
 ---
 

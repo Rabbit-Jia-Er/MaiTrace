@@ -1,4 +1,4 @@
-"""MaiTrace（麦麦空间）插件入口 — 新 SDK 版本
+"""MaiTrace（麦麦空间）插件入口
 
 业务逻辑全部抽到 services/，命令/动作/API 在 handlers/。
 plugin.py 只负责：装配生命周期、声明 @Command/@Tool/@API 装饰器。

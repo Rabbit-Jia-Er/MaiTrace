@@ -85,7 +85,7 @@ class PluginSection(PluginConfigBase):
         description="Napcat HTTP 服务器地址。本机部署填 127.0.0.1，Docker 部署常填 napcat。",
         json_schema_extra={
             "label": "Napcat 地址",
-            "hint": "仅 cookie_methods 含 napcat 时用；Docker 填 napcat",
+            "hint": "Docker 填 napcat",
             "placeholder": "127.0.0.1",
             "order": 10,
         },
@@ -105,7 +105,7 @@ class PluginSection(PluginConfigBase):
         description="Napcat HTTP 服务的认证 Token。若 Napcat 设置了 Token 必须填，否则留空。",
         json_schema_extra={
             "label": "Napcat Token",
-            "hint": "Napcat 未设置 Token 则留空；建议用纯 ASCII",
+            "hint": "Napcat 未设置 Token 则留空",
             "placeholder": "（留空 = 不认证）",
             "order": 12,
         },
@@ -142,7 +142,7 @@ class PluginSection(PluginConfigBase):
 
 
 class SendSection(PluginConfigBase):
-    """发说说核心（/zn 命令、SendFeed Action、Routine 共用）。"""
+    """发说说核心"""
 
     __ui_label__: ClassVar[str] = "发说说"
     __ui_icon__: ClassVar[str] = "send"
@@ -220,10 +220,10 @@ class ImageSection(PluginConfigBase):
 
     enable_image: bool = Field(
         default=False,
-        description="是否给说说附带图片。需 pic_plugin_model（AI 生图）或表情包至少一个可用。",
+        description="是否给说说附带图片。需配置 AI 生图模型或表情包至少一个可用。",
         json_schema_extra={
             "label": "启用配图",
-            "hint": "需配 pic_plugin_model 或表情包，否则发纯文本兜底",
+            "hint": "需 （AI 生图）或表情包至少一个可用，否则发纯文本兜底",
             "order": 1,
         },
     )
@@ -254,7 +254,7 @@ class ImageSection(PluginConfigBase):
         description="每条说说附带的图片数量（1-4）。多数 AI 生图一次出 1 张，>1 需确认模型支持。",
         json_schema_extra={
             "label": "图片数量",
-            "hint": "1-4；多图模型仅部分支持（如 Kolors）",
+            "hint": "1-4；多图模型仅部分支持",
             "depends_on": "image.enable_image",
             "depends_value": True,
             "order": 4,
@@ -341,7 +341,7 @@ class ReadSection(PluginConfigBase):
         description="读到一条说说后点赞的概率（0-1，1.0 = 必点赞）。",
         json_schema_extra={
             "label": "点赞概率",
-            "hint": "0-1，1.0 = 必点赞（旧名 like_possibility 仍可读）",
+            "hint": "0-1，1.0 = 必点赞",
             "order": 4,
         },
         validation_alias=AliasChoices("like_probability", "like_possibility"),
@@ -351,7 +351,7 @@ class ReadSection(PluginConfigBase):
         description="读到一条说说后评论的概率（0-1，1.0 = 必评论）。",
         json_schema_extra={
             "label": "评论概率",
-            "hint": "0-1，1.0 = 必评论（旧名 comment_possibility 仍可读）",
+            "hint": "0-1，1.0 = 必评论",
             "order": 5,
         },
         validation_alias=AliasChoices("comment_probability", "comment_possibility"),
@@ -383,7 +383,7 @@ class ReadSection(PluginConfigBase):
 
 
 class MonitorSection(PluginConfigBase):
-    """刷空间配置（Routine 自动刷空间时使用）。"""
+    """刷空间配置（自动刷空间时使用）。"""
 
     __ui_label__: ClassVar[str] = "刷空间"
     __ui_icon__: ClassVar[str] = "rss"
@@ -414,7 +414,7 @@ class MonitorSection(PluginConfigBase):
         description="刷空间遇到一条新说说后点赞的概率（0-1）。",
         json_schema_extra={
             "label": "点赞概率",
-            "hint": "0-1，1.0 = 必点赞（旧名 like_possibility 仍可读）",
+            "hint": "0-1，1.0 = 必点赞",
             "order": 3,
         },
         validation_alias=AliasChoices("like_probability", "like_possibility"),
@@ -424,7 +424,7 @@ class MonitorSection(PluginConfigBase):
         description="刷空间遇到一条新说说后评论的概率。评论 prompt 复用 [read].prompt / rt_prompt。",
         json_schema_extra={
             "label": "评论概率",
-            "hint": "0-1；prompt 复用 [read] 段的（旧名 comment_possibility 仍可读）",
+            "hint": "0-1；prompt 复用 [read] 段的",
             "order": 4,
         },
         validation_alias=AliasChoices("comment_probability", "comment_possibility"),
@@ -475,7 +475,7 @@ class MonitorSection(PluginConfigBase):
         description="检查评论的自己最新说说数量（仅 enable_auto_reply=true 时生效）。",
         json_schema_extra={
             "label": "自检条数",
-            "hint": "检查麦麦最近 N 条说说的评论区（旧名 self_readnum 仍可读）",
+            "hint": "检查麦麦最近 N 条说说的评论区",
             "depends_on": "monitor.enable_auto_reply",
             "depends_value": True,
             "order": 21,
@@ -533,7 +533,7 @@ class MonitorSection(PluginConfigBase):
 class RoutineSection(PluginConfigBase):
     """Routine 日程驱动配置（依赖 autonomous_planning_plugin）。
 
-    Routine 是 MaiTrace 的"行为大脑"：定期读日程 → 让 LLM 决定要不要发说说/刷空间。
+    定期读日程 → 让 LLM 决定要不要发说说/刷空间。
     """
 
     __ui_label__: ClassVar[str] = "日程驱动"
@@ -639,7 +639,7 @@ class RoutineSection(PluginConfigBase):
 
 
 class LLMSection(PluginConfigBase):
-    """LLM 调用配置（v3.1 重命名：原 [models] → [llm]）。"""
+    """LLM 调用配置"""
 
     __ui_label__: ClassVar[str] = "LLM"
     __ui_icon__: ClassVar[str] = "cpu"
@@ -814,7 +814,7 @@ class DiarySection(PluginConfigBase):
 
 
 class PersonaSection(PluginConfigBase):
-    """人格扩展配置（补主程序 [personality] 没覆盖的字段）。
+    """人格扩展配置。
 
     所有 LLM 写说说 / 评论 / 回复 / 日记的链路共用本段。
     """
