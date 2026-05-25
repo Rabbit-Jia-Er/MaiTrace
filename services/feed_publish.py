@@ -135,7 +135,7 @@ async def send_feed(
             return False, "custom 模式取私聊内容失败"
         story = custom_message
         logger.info("custom 模式说说内容: %s", story)
-        # custom 模式仍需要 persona.self_description 在配图时用
+        # custom 模式跳过 LLM 生成，但仍要加载 persona 给后续配图用
         persona = await resolve_persona(plugin)
     else:
         persona = await resolve_persona(plugin)

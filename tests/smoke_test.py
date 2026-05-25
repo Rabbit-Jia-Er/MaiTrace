@@ -347,7 +347,6 @@ async def test_persona_baseline():
     assert "狐妖" in persona.personality
     # 既没用户填、绘卷也没东西 → 应为空
     assert persona.self_description == ""
-    assert persona.reference_image_path == ""
     # default_style 是主程序 reply_style 原值
     assert persona.default_style == "默认风格"
 
@@ -377,24 +376,6 @@ async def test_persona_art_fallback_default():
     from MaiTrace.services.persona import resolve_persona
     persona = await resolve_persona(p)
     assert "silver hair" in persona.self_description, f"绘卷兜底未生效: {persona.self_description!r}"
-
-
-async def test_persona_reference_image_path():
-    """reference_image_path 绝对路径 + 文件存在 → 进 Persona。"""
-    # 用 smoke_test.py 自己当一个"存在的文件"
-    test_file = os.path.abspath(__file__)
-    p = _make_plugin(art_reference_path=test_file)
-    from MaiTrace.services.persona import resolve_persona
-    persona = await resolve_persona(p)
-    assert persona.reference_image_path == test_file, persona.reference_image_path
-
-
-async def test_persona_reference_image_missing():
-    """reference_image_path 指向不存在的文件 → 安全降级为空。"""
-    p = _make_plugin(art_reference_path="/tmp/definitely_not_exist_xxx.jpg")
-    from MaiTrace.services.persona import resolve_persona
-    persona = await resolve_persona(p)
-    assert persona.reference_image_path == ""
 
 
 # ============================================================
@@ -903,8 +884,6 @@ def main():
     _run("persona baseline", test_persona_baseline)
     _run("persona user self_description first", test_persona_user_self_description)
     _run("persona art selfie fallback (default on)", test_persona_art_fallback_default)
-    _run("persona reference_image_path absolute", test_persona_reference_image_path)
-    _run("persona reference_image missing → empty", test_persona_reference_image_missing)
     _run("persona multiple_reply_style sampling", test_persona_style_sampling)
     _run("persona system_prefix concat", test_persona_system_prefix)
 
