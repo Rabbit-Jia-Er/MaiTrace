@@ -336,12 +336,14 @@ def test_manifest():
 
 async def test_persona_baseline():
     p = _make_plugin()
+    # 显式关闭绘卷兜底（默认开启，但这里要测干净的 baseline）
+    p.config.persona.use_art_selfie_prompt = False
     from MaiTrace.services.persona import resolve_persona
     persona = await resolve_persona(p)
     assert persona.nickname == "麦麦"
     assert persona.alias_names == ["小麦"]
     assert "狐妖" in persona.personality
-    # baseline 没填 self_description 且没开绘卷兜底 → 应为空
+    # baseline 没填 self_description 且关闭绘卷兜底 → 应为空
     assert persona.self_description == ""
     # default_style 是主程序 reply_style 原值
     assert persona.default_style == "默认风格"
@@ -363,8 +365,18 @@ async def test_persona_user_self_description():
 
 
 # ============================================================
-# 测试 8. resolve_persona - 绘卷 selfie 兜底
+# 测试 8. resolve_persona - 绘卷 selfie 兜底（默认行为）
 # ============================================================
+
+
+async def test_persona_art_fallback_default():
+    """默认 use_art_selfie_prompt=True，self_description 为空时应自动兜底。"""
+    p = _make_plugin()
+    # 不动 use_art_selfie_prompt，验证默认就启用
+    assert p.config.persona.use_art_selfie_prompt is True, "use_art_selfie_prompt 默认应为 True"
+    from MaiTrace.services.persona import resolve_persona
+    persona = await resolve_persona(p)
+    assert "silver hair" in persona.self_description, f"默认应启用绘卷兜底: {persona.self_description!r}"
 
 
 async def test_persona_art_fallback():
@@ -913,7 +925,8 @@ def main():
     print("\n[B] persona 系统")
     _run("persona baseline", test_persona_baseline)
     _run("persona user self_description first", test_persona_user_self_description)
-    _run("persona art selfie fallback", test_persona_art_fallback)
+    _run("persona art selfie fallback (explicit)", test_persona_art_fallback)
+    _run("persona art selfie fallback (default on)", test_persona_art_fallback_default)
     _run("persona multiple_reply_style sampling", test_persona_style_sampling)
     _run("persona system_prefix concat", test_persona_system_prefix)
 

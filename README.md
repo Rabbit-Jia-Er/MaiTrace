@@ -222,8 +222,10 @@ Cookie 方式：
 | 项 | 默认 | 说明 |
 |---|---|---|
 | `self_description` | `""` | 中文自我形象描述（"我是银发红瞳的狐妖"），注入所有 prompt 头部 |
-| `use_art_selfie_prompt` | `false` | `self_description` 为空时从绘卷 `selfie.prompt_prefix` 兜底（英文 SD 词） |
+| `use_art_selfie_prompt` | `true` | `self_description` 为空时**自动**从绘卷 `selfie.prompt_prefix` 兜底（默认开启，绘卷未装时自动跳过） |
 | `use_multiple_reply_style` | `true` | 按主程序 `personality.multiple_probability` 从备用风格池抽样替换 `reply_style`（与主程序聊天回复一致） |
+
+> **形象注入优先级**：`persona.self_description` 非空 → 用 user 填的；为空且 `use_art_selfie_prompt=true` → 自动读绘卷 `[selfie].prompt_prefix`；都没有 → 不注入。
 
 ## Routine 决策四层防线
 

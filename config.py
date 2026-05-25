@@ -825,15 +825,17 @@ class PersonaSection(PluginConfigBase):
         },
     )
     use_art_selfie_prompt: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "self_description 为空时，尝试从麦麦绘卷 (mais_art_journal) 读 "
-            "selfie.prompt_prefix（英文 SD prompt）作为兜底注入。"
-            "建议在 self_description 里手写中文，本字段只是英文兜底。"
+            "self_description 为空时，自动从麦麦绘卷 (mais_art_journal) 读 "
+            "selfie.prompt_prefix 作为兜底注入到所有 LLM prompt 头部。"
+            "默认开启 —— 这样不填 self_description 也能让 LLM 知道你的外观。"
+            "绘卷未安装 / [selfie].enabled=false / prompt_prefix 为空 时自动跳过。"
+            "user 填了 self_description 则永远优先用 user 的。"
         ),
         json_schema_extra={
-            "label": "借用绘卷 selfie 前缀",
-            "hint": "self_description 为空时从绘卷拿英文前缀兜底",
+            "label": "绘卷 selfie 兜底",
+            "hint": "self_description 留空时自动用绘卷 selfie.prompt_prefix",
             "order": 2,
         },
     )
