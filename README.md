@@ -221,14 +221,15 @@ Cookie 方式：
 ### `[persona]`（人格扩展）⭐ v3.1 新增
 | 项 | 默认 | 说明 |
 |---|---|---|
-| `self_description` | `""` | 中文自我形象描述（例 `"我是银发红瞳的狐妖"`），注入所有 prompt 头部 |
+| `self_description` | `""` | 中文自我形象描述（例 `"我是银发红瞳的狐妖"`）。**仅注入文本 LLM 的 prompt 头部**（写说说/评论/日记）。**不**注入生图 prompt |
 | `use_multiple_reply_style` | `true` | 按主程序 `personality.multiple_probability` 从备用风格池抽样替换 `reply_style`（与主程序聊天回复一致） |
 
-**形象注入与配图自动联动**（v3.1.3+，无需任何开关）：
+**形象与配图分两条独立链路**（v3.1.4+，无需任何 MaiTrace 端开关）：
 
-- **prompt 形象**：`persona.self_description` 非空 → 用 user 填的；为空 → 自动用绘卷 `[selfie].prompt_prefix` 兜底
-- **配图参考图**：始终自动读绘卷 `[selfie].reference_image_path`，存在时给 `generate_image` 传 `input_image_base64` + `strength=0.6`，**走图生图**（让画出来的人就是麦麦本人）
-- 绘卷未装 / `[selfie].enabled=false` / 参考图文件缺失，都会安全降级，不报错
+- **文本 LLM 形象**：`persona.self_description` 非空 → 用 user 填的；为空 → 自动用绘卷 `[selfie].prompt_prefix` 兜底；都没有 → 不注入。形象进入说说/评论/日记的中文 prompt 头部
+- **配图形象**：调绘卷 `generate_image` 始终传 `selfie_mode=True`，让绘卷走 selfie 流程 —— 形象来自绘卷自己的 `[selfie].prompt_prefix`（**不被优化器改写**，只有场景被 `SELFIE_SCENE_SYSTEM_PROMPT` 优化）；参考图来自绘卷 `[selfie].reference_image_path`；模型不支持 img2img 时绘卷自动降级 txt2img
+
+> 这样设计的好处：文本形象用中文好读，画图形象用绘卷专业 SD prompt（高质量稳定输出）；两套独立管理，互不污染。
 
 ## Routine 决策四层防线
 

@@ -446,7 +446,8 @@ async def test_persona_system_prefix():
 # ============================================================
 
 
-async def test_collect_images_ai_with_self_desc():
+async def test_collect_images_ai_path():
+    """AI 路径：调绘卷只传场景（message），且传 selfie_mode=True。"""
     p = _make_plugin()
     p.config.image.enable_image = True
     p.config.image.image_mode = "only_ai"
@@ -455,91 +456,21 @@ async def test_collect_images_ai_with_self_desc():
     p.config.image.clear_image = True  # 不归档
 
     from MaiTrace.services.feed_image import collect_images_for_feed
-    images = await collect_images_for_feed(
-        p, "今天泡澡好舒服",
-        self_description="我是一只银发红瞳的狐妖。",
-    )
+    images = await collect_images_for_feed(p, "今天泡澡好舒服")
     assert len(images) == 2, f"应返 2 张图，实际 {len(images)}"
-    assert all(b == FAKE_PNG for b in images), "返回 bytes 不匹配"
+    assert all(b == FAKE_PNG for b in images)
     api_calls = p.ctx.api.calls
     assert len(api_calls) == 2
     for c in api_calls:
         assert c["name"] == "1021143806.mais_art_journal.generate_image"
-        assert "狐妖" in c["kwargs"]["prompt"], f"prompt 缺 self_description: {c['kwargs']['prompt']!r}"
-        assert "泡澡" in c["kwargs"]["prompt"], f"prompt 缺 message: {c['kwargs']['prompt']!r}"
-        # 没传 reference_image_path → 不应有 input_image_base64
+        # prompt 只是场景，不含 self_description / "场景：" 拼接
+        assert c["kwargs"]["prompt"] == "今天泡澡好舒服"
+        # 始终传 selfie_mode=True 让绘卷走 selfie 流程
+        assert c["kwargs"]["selfie_mode"] is True
+        assert c["kwargs"]["selfie_style"] == "standard"
+        # 不应再传 input_image_base64（绘卷自己读 selfie.reference_image_path）
         assert "input_image_base64" not in c["kwargs"]
         assert "strength" not in c["kwargs"]
-
-
-async def test_collect_images_img2img():
-    """传 reference_image_path → 调绘卷时附带 input_image_base64 + strength。"""
-    p = _make_plugin()
-    p.config.image.enable_image = True
-    p.config.image.image_mode = "only_ai"
-    p.config.image.image_number = 1
-    p.config.image.pic_plugin_model = "model1"
-    p.config.image.clear_image = True
-
-    # 用真实文件作参考图（smoke_test.py 自己）
-    ref_path = os.path.abspath(__file__)
-    expected_b64 = base64.b64encode(open(ref_path, "rb").read()).decode("ascii")
-
-    from MaiTrace.services.feed_image import collect_images_for_feed
-    await collect_images_for_feed(
-        p, "今天好开心",
-        self_description="银发狐妖",
-        reference_image_path=ref_path,
-    )
-    assert len(p.ctx.api.calls) == 1
-    call = p.ctx.api.calls[0]
-    assert call["kwargs"]["input_image_base64"] == expected_b64
-    assert 0.1 <= call["kwargs"]["strength"] <= 1.0
-    assert "狐妖" in call["kwargs"]["prompt"]
-
-
-async def test_collect_images_img2img_missing_file():
-    """参考图路径指向不存在的文件 → 降级文生图（不传 input_image_base64）。"""
-    p = _make_plugin()
-    p.config.image.enable_image = True
-    p.config.image.image_mode = "only_ai"
-    p.config.image.image_number = 1
-    p.config.image.pic_plugin_model = "model1"
-    p.config.image.clear_image = True
-
-    from MaiTrace.services.feed_image import collect_images_for_feed
-    images = await collect_images_for_feed(
-        p, "测试",
-        self_description="形象",
-        reference_image_path="/tmp/not_exist_xxx.jpg",  # 不存在
-    )
-    # 应仍能生成（降级 txt2img）
-    assert len(images) == 1
-    assert "input_image_base64" not in p.ctx.api.calls[0]["kwargs"]
-
-
-# ============================================================
-# 测试 12. collect_images_for_feed - 不传 self_description → prompt 退化为裸 message
-# ============================================================
-
-
-async def test_collect_images_no_self_desc():
-    p = _make_plugin()
-    p.config.image.enable_image = True
-    p.config.image.image_mode = "only_ai"
-    p.config.image.image_number = 1
-    p.config.image.pic_plugin_model = "model1"
-    p.config.image.clear_image = True
-
-    from MaiTrace.services.feed_image import collect_images_for_feed
-    await collect_images_for_feed(p, "今天好开心")
-    prompt = p.ctx.api.calls[0]["kwargs"]["prompt"]
-    assert prompt.strip() == "今天好开心", f"无 self_desc 时 prompt 应裸传 message: {prompt!r}"
-
-
-# ============================================================
-# 测试 13. collect_images_for_feed - emoji 路径不调绘卷 API
-# ============================================================
 
 
 async def test_collect_images_emoji():
@@ -549,14 +480,9 @@ async def test_collect_images_emoji():
     p.config.image.image_number = 3
 
     from MaiTrace.services.feed_image import collect_images_for_feed
-    images = await collect_images_for_feed(p, "哈哈", self_description="无所谓")
+    images = await collect_images_for_feed(p, "哈哈")
     assert len(images) == 3
     assert len(p.ctx.api.calls) == 0, "emoji 路径不应调绘卷 API"
-
-
-# ============================================================
-# 测试 14. collect_images_for_feed - clear_image=False 归档
-# ============================================================
 
 
 async def test_collect_images_archive():
@@ -567,7 +493,6 @@ async def test_collect_images_archive():
     p.config.image.pic_plugin_model = "model1"
     p.config.image.clear_image = False  # 归档
 
-    # 清空归档目录
     from MaiTrace.services.persistence import get_images_dir
     archive = get_images_dir()
     for f in os.listdir(archive):
@@ -575,24 +500,18 @@ async def test_collect_images_archive():
             os.remove(archive / f)
 
     from MaiTrace.services.feed_image import collect_images_for_feed
-    await collect_images_for_feed(p, "归档测试", self_description="")
+    await collect_images_for_feed(p, "归档测试")
     archived = [f for f in os.listdir(archive) if f.startswith("pic_plugin_")]
     assert len(archived) == 2, f"应归档 2 张，实际 {len(archived)}"
-    # 清理
     for f in archived:
         os.remove(archive / f)
-
-
-# ============================================================
-# 测试 15. enable_image=False 直接返空
-# ============================================================
 
 
 async def test_collect_images_disabled():
     p = _make_plugin()
     p.config.image.enable_image = False
     from MaiTrace.services.feed_image import collect_images_for_feed
-    images = await collect_images_for_feed(p, "x", self_description="y")
+    images = await collect_images_for_feed(p, "x")
     assert images == []
 
 
@@ -990,10 +909,7 @@ def main():
     _run("persona system_prefix concat", test_persona_system_prefix)
 
     print("\n[C] 配图生成")
-    _run("images: AI path with self_description", test_collect_images_ai_with_self_desc)
-    _run("images: img2img with reference", test_collect_images_img2img)
-    _run("images: missing reference → txt2img fallback", test_collect_images_img2img_missing_file)
-    _run("images: AI path no self_description (bare prompt)", test_collect_images_no_self_desc)
+    _run("images: AI path (selfie_mode + scene only)", test_collect_images_ai_path)
     _run("images: emoji path skips art api", test_collect_images_emoji)
     _run("images: clear_image=False archives", test_collect_images_archive)
     _run("images: enable_image=False empty", test_collect_images_disabled)

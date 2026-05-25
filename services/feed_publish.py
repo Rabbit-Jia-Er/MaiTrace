@@ -157,12 +157,8 @@ async def send_feed(
             return False, f"生成说说内容失败: {story}"
         logger.info("生成说说内容: %s", story)
 
-    # 4. 收集图片（self_description 拼进生图 prompt + reference_image_path 走图生图）
-    images = await collect_images_for_feed(
-        plugin, story,
-        self_description=persona.self_description,
-        reference_image_path=persona.reference_image_path,
-    )
+    # 4. 收集图片（绘卷自己用 selfie_mode 处理形象+参考图，本插件只传场景）
+    images = await collect_images_for_feed(plugin, story)
 
     # 5. 发布
     try:

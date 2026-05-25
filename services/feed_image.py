@@ -1,14 +1,19 @@
 """图片获取（AI 生图 + 表情包）。
 
 AI 生图通过跨插件 API 调用麦麦绘卷（mais_art_journal）的 ``generate_image`` 公开 API。
-绘卷内部 pipeline 自带 prompt optimizer（中文 → 英文 SD prompt），
-本模块只把"自我形象 + 说说正文"拼成中文 prompt 透传给绘卷。
+调用时**始终传 ``selfie_mode=True``**，让绘卷走 selfie 流程：
 
-新版（v3.1.1+）：
+- 形象 prompt 走绘卷自己的 ``[selfie].prompt_prefix``（**不被优化器改写**）
+- 参考图走绘卷自己的 ``[selfie].reference_image_path``（自动 img2img；模型不支持时
+  绘卷会用 ``silent_img2img_fallback=True`` 自动降级 txt2img）
+- 我们只传 ``prompt`` 作为**场景描述**（说说正文），绘卷的
+  ``SELFIE_SCENE_SYSTEM_PROMPT`` 只优化场景，明确禁止改写角色外观
 
-- ``self_description`` 由 ``services.persona`` 注入，让生图也知道 bot 的外观
-- 绘卷返回 base64 后直接进 bytes 列表，不再"落盘 → 读回 → 删"
-- ``image.clear_image=false`` 时把生成的图归档一份到 ``data/images/``（仅留底）
+变更说明（v3.1.4+）：
+
+- 不再在 MaiTrace 这边拼 ``self_description + 场景`` 给绘卷
+- ``persona.self_description`` 只影响文本 LLM（说说/评论/日记），不再注入生图 prompt
+- ``persona.reference_image_path`` 不再被 MaiTrace 读，由绘卷自己管理
 """
 
 from __future__ import annotations
@@ -33,24 +38,6 @@ _ART_PLUGIN_ID = "1021143806.mais_art_journal"
 _ART_GENERATE_IMAGE = f"{_ART_PLUGIN_ID}.generate_image"
 
 
-def _compose_image_prompt(self_description: str, message: str) -> str:
-    """把 self_description 和说说正文拼成给绘卷的 prompt。
-
-    self_description 为空时直接返回 message。否则放在前面让绘卷 prompt
-    optimizer 优先把形象信息编码进英文 SD prompt。
-    """
-    desc = (self_description or "").strip()
-    msg = (message or "").strip()
-    if not desc:
-        return msg
-    # 句末加句号方便 LLM 分段，但不重复加
-    if not desc.endswith(("。", ".", "！", "!", "？", "?")):
-        desc += "。"
-    if not msg:
-        return desc
-    return f"{desc} 场景：{msg}"
-
-
 # ============================================================
 # 麦麦绘卷桥接：ctx.api.call("...generate_image", ...)
 # ============================================================
@@ -62,20 +49,19 @@ async def generate_image_via_pic_plugin(
     pic_plugin_model: str,
     *,
     archive_dir: str = "",
-    input_image_base64: str = "",
-    img2img_strength: float = 0.6,
 ) -> Optional[bytes]:
     """通过麦麦绘卷生成一张图，直接返回 bytes。
 
+    始终传 ``selfie_mode=True`` —— 让绘卷用 ``[selfie].prompt_prefix`` 作为角色外观、
+    ``[selfie].reference_image_path`` 作为参考图，本插件只负责传"场景描述"。
+
     Args:
         plugin: MaiTracePlugin 实例。
-        image_prompt: 已拼好的中文/英文 prompt（绘卷会内部优化）。
+        image_prompt: 场景描述（说说正文）。绘卷会用 SELFIE_SCENE_SYSTEM_PROMPT
+            优化为英文 SD 场景标签（不会改写角色外观）。
         pic_plugin_model: 绘卷 ``models.<id>``，对应 ``image.pic_plugin_model``。
         archive_dir: 非空时把生成的图归档到该目录（``image.clear_image=false`` 用）。
             空串=不落盘，调完直接返。
-        input_image_base64: 图生图参考图 base64。非空时调绘卷会传 ``input_image_base64``
-            和 ``strength``，绘卷自动走图生图。来自 persona.reference_image_path。
-        img2img_strength: 图生图强度（0.1-1.0）。仅 input_image_base64 非空时生效。
 
     Returns:
         Optional[bytes]: 成功返回图片 bytes；失败返回 ``None``。
@@ -87,17 +73,15 @@ async def generate_image_via_pic_plugin(
         logger.warning("未配置 image.pic_plugin_model，跳过 AI 生图")
         return None
 
-    call_kwargs: dict = {
-        "prompt": image_prompt,
-        "model_id": pic_plugin_model,
-        "use_cache": False,
-    }
-    if input_image_base64:
-        call_kwargs["input_image_base64"] = input_image_base64
-        call_kwargs["strength"] = float(img2img_strength)
-
     try:
-        result = await plugin.ctx.api.call(_ART_GENERATE_IMAGE, **call_kwargs)
+        result = await plugin.ctx.api.call(
+            _ART_GENERATE_IMAGE,
+            prompt=image_prompt,
+            model_id=pic_plugin_model,
+            selfie_mode=True,        # ← 让绘卷走 selfie 流程：保留外观、只优化场景
+            selfie_style="standard",  # 前置自拍角度（绘卷默认）
+            use_cache=False,
+        )
     except Exception as exc:
         logger.error("调用绘卷 generate_image 异常: %s", exc, exc_info=True)
         return None
@@ -125,7 +109,7 @@ async def generate_image_via_pic_plugin(
         "绘卷生图成功 (model=%s, size=%s, %s, %d bytes)",
         result.get("model_id", ""),
         result.get("size", ""),
-        "img2img" if input_image_base64 else "txt2img",
+        "img2img" if result.get("is_img2img") else "txt2img",
         len(img_bytes),
     )
 
@@ -184,24 +168,22 @@ async def get_emoji_image(plugin, description: str) -> Optional[bytes]:
 async def collect_images_for_feed(
     plugin,
     message: str,
-    *,
-    self_description: str = "",
-    reference_image_path: str = "",
 ) -> list[bytes]:
     """按 ``image.*`` 配置收集图片，直接返回 bytes 列表。
 
     Args:
         plugin: MaiTracePlugin 实例。
-        message: 说说正文。会拼到生图 prompt 的"场景"部分。
-        self_description: bot 自我形象描述（中文 / 英文 SD prompt 都可）。非空时会拼到
-            生图 prompt 最前面，让绘卷 prompt optimizer 把形象一起编码进英文 SD prompt。
-        reference_image_path: 参考图的**绝对路径**（来自 ``persona.reference_image_path``，
-            通常源自绘卷 ``[selfie].reference_image_path``）。非空时读取并 base64 编码后
-            传给绘卷 ``input_image_base64`` 走图生图。
+        message: 说说正文。AI 路径下作为场景描述传给绘卷；emoji 路径下作为表情包
+            匹配 description 使用。
 
     Returns:
         list[bytes]: 生成的图片 bytes 列表（每张图一项）。AI 生图失败 / 表情包
-        匹配失败时该项会被跳过，返回空列表代表本次发纯文本。
+        匹配失败时该项会被跳过；返回空列表代表本次发纯文本。
+
+    Note:
+        形象（``persona.self_description`` / 绘卷 ``[selfie].prompt_prefix``）和参考图
+        （绘卷 ``[selfie].reference_image_path``）都由**绘卷自己**通过 ``selfie_mode=True``
+        处理，不在 MaiTrace 这边干预。
     """
     images: list[bytes] = []
 
@@ -225,26 +207,9 @@ async def collect_images_for_feed(
             logger.warning("未配置 image.pic_plugin_model，无法生 AI 图，将发纯文本")
             return images
 
-        image_prompt = _compose_image_prompt(self_description, message)
-
-        # 加载参考图（如果有）→ base64
-        ref_b64 = ""
-        if reference_image_path:
-            try:
-                with open(reference_image_path, "rb") as f:
-                    ref_b64 = base64.b64encode(f.read()).decode("ascii")
-                logger.info(
-                    "使用参考图走图生图: %s (%d bytes)",
-                    reference_image_path, len(ref_b64),
-                )
-            except OSError as exc:
-                logger.warning("读取参考图失败 %s: %s（降级纯文生图）", reference_image_path, exc)
-
         logger.info(
-            "使用绘卷生成配图: model=%s mode=%s prompt=%s",
-            pic_plugin_model,
-            "img2img" if ref_b64 else "txt2img",
-            image_prompt[:80],
+            "使用绘卷生成配图: model=%s scene=%s",
+            pic_plugin_model, message[:80],
         )
 
         # clear_image=false 时归档历史副本，true 时不落盘
@@ -256,9 +221,8 @@ async def collect_images_for_feed(
         # 按 image_number 多次调用（绘卷 generate_image 一次返回一张图）
         for _ in range(image_number):
             img_bytes = await generate_image_via_pic_plugin(
-                plugin, image_prompt, pic_plugin_model,
+                plugin, message, pic_plugin_model,
                 archive_dir=archive_dir,
-                input_image_base64=ref_b64,
             )
             if img_bytes:
                 images.append(img_bytes)
