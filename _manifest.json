@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "Rabbit-Jia-Er.MaiTrace",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "name": "MaiTrace（麦时迹）",
-  "description": "让麦麦发QQ空间、读说说、自动评论点赞、回复评论、写日记，支持日程驱动。",
+  "description": "属于 MaiBot 自己的 QQ 空间生活插件。让麦麦自主发说说、刷动态、点赞回复、写日记，留下属于麦麦自己的时间足迹。",
   "author": {
     "name": "Rabbit-Jia-Er",
     "url": "https://github.com/Rabbit-Jia-Er"
