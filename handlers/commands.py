@@ -45,10 +45,7 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
     # ===== 全局管理员检查（覆盖所有子命令：help / 主题 / custom / gen / ls / v / debug / <日期>） =====
     if not is_admin(plugin.config, user_id):
         admin_list = list(plugin.config.plugin.admin_qq or [])
-        if not admin_list:
-            msg = "⚠️ /zn 命令未配置管理员（plugin.admin_qq 为空）。请在 config.toml 里填入管理员 QQ。"
-        else:
-            msg = f"⚠️ /zn 命令仅管理员可用，你的 QQ ({user_id}) 不在 plugin.admin_qq 列表"
+        msg = "⚠️ 未配置管理员" if not admin_list else "⚠️ 仅管理员可用"
         await plugin.ctx.send.text(msg, stream_id)
         return False, "no admin", True
 

@@ -141,7 +141,7 @@ await self.ctx.api.call(
 | `clear_image` | `true` | 上传后是否删本地副本（false 时归档到 `data/images/`） |
 | `selfie_style` ⭐v3.1.5 | `photo` | 绘卷 selfie 视角：`photo`(第三人称) / `standard`(前置自拍) / `mirror`(对镜) |
 
-> **⚠️ host RPC 30 秒上限**：MaiTrace 调绘卷走 `ctx.api.call`，host 端 30 秒硬超时。豆包 `seedream-4-5` 等模型生 2560×1440 实测约 31s+，会导致**说说发出但无配图**（日志：`feed_image | 调用绘卷 generate_image 异常: [E_TIMEOUT]`）。解决：在**绘卷**配置里把 `[models].<id>.default_size` 改为 `1024x1024`（通常 10s 内），或换更快的绘图模型。
+> **⚠️ host RPC 30 秒上限**：MaiTrace 调绘卷走 `ctx.api.call`，host 端 30 秒硬超时，会导致**说说发出但无配图**（日志：`feed_image | 调用绘卷 generate_image 异常: [E_TIMEOUT]`）。解决：在**绘卷**配置里把 `[models].<id>.default_size` 改为 `1024x1024`（通常 10s 内），或换更快的绘图模型。
 
 ### `[read]` 读说说 / 评论
 | 项 | 默认 | 说明 |
