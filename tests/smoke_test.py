@@ -91,6 +91,7 @@ class MockConfigCap:
         alias: List[str] | None = None,
         art_prompt_prefix: str = "silver hair, red eyes, 1girl",
         art_selfie_enabled: bool = True,
+        art_reference_path: str = "",
         qq_account: str = "10001",
     ):
         self._data = {
@@ -104,6 +105,7 @@ class MockConfigCap:
         }
         self._art_prompt_prefix = art_prompt_prefix
         self._art_selfie_enabled = art_selfie_enabled
+        self._art_reference_path = art_reference_path  # 测试时传绝对路径
 
     async def get(self, key, default=None):
         return self._data.get(key, default)
@@ -114,6 +116,7 @@ class MockConfigCap:
                 "selfie": {
                     "enabled": self._art_selfie_enabled,
                     "prompt_prefix": self._art_prompt_prefix,
+                    "reference_image_path": self._art_reference_path,
                 }
             }
         return {}
@@ -308,7 +311,7 @@ def test_config_sections():
         raise AssertionError(f"缺少 section: {expected_sections - got}")
     # persona 字段
     p = cfg["persona"]
-    for k in ("self_description", "use_art_selfie_prompt", "use_multiple_reply_style"):
+    for k in ("self_description", "use_multiple_reply_style"):
         assert k in p, f"persona 段缺 {k}"
     # diary.per_message_max_chars 默认 200
     assert cfg["diary"]["per_message_max_chars"] == 200, "默认 per_message_max_chars 应为 200"
@@ -335,16 +338,16 @@ def test_manifest():
 
 
 async def test_persona_baseline():
-    p = _make_plugin()
-    # 显式关闭绘卷兜底（默认开启，但这里要测干净的 baseline）
-    p.config.persona.use_art_selfie_prompt = False
+    """没填 self_description + 绘卷 prompt_prefix 为空 → self_description 为空。"""
+    p = _make_plugin(art_prompt_prefix="", art_selfie_enabled=False)
     from MaiTrace.services.persona import resolve_persona
     persona = await resolve_persona(p)
     assert persona.nickname == "麦麦"
     assert persona.alias_names == ["小麦"]
     assert "狐妖" in persona.personality
-    # baseline 没填 self_description 且关闭绘卷兜底 → 应为空
+    # 既没用户填、绘卷也没东西 → 应为空
     assert persona.self_description == ""
+    assert persona.reference_image_path == ""
     # default_style 是主程序 reply_style 原值
     assert persona.default_style == "默认风格"
 
@@ -357,34 +360,41 @@ async def test_persona_baseline():
 async def test_persona_user_self_description():
     p = _make_plugin()
     p.config.persona.self_description = "我是银发红瞳的狐妖"
-    p.config.persona.use_art_selfie_prompt = True  # 同时开兜底
     from MaiTrace.services.persona import resolve_persona
     persona = await resolve_persona(p)
-    # 用户填的优先，绘卷兜底被忽略
+    # 用户填的优先，绘卷 prompt_prefix 被忽略
     assert persona.self_description == "我是银发红瞳的狐妖", persona.self_description
 
 
 # ============================================================
-# 测试 8. resolve_persona - 绘卷 selfie 兜底（默认行为）
+# 测试 8. resolve_persona - 绘卷 selfie 自动兜底（无开关）
 # ============================================================
 
 
 async def test_persona_art_fallback_default():
-    """默认 use_art_selfie_prompt=True，self_description 为空时应自动兜底。"""
-    p = _make_plugin()
-    # 不动 use_art_selfie_prompt，验证默认就启用
-    assert p.config.persona.use_art_selfie_prompt is True, "use_art_selfie_prompt 默认应为 True"
-    from MaiTrace.services.persona import resolve_persona
-    persona = await resolve_persona(p)
-    assert "silver hair" in persona.self_description, f"默认应启用绘卷兜底: {persona.self_description!r}"
-
-
-async def test_persona_art_fallback():
-    p = _make_plugin()
-    p.config.persona.use_art_selfie_prompt = True
+    """self_description 留空 → 自动用绘卷 prompt_prefix，无需任何开关。"""
+    p = _make_plugin()  # 默认 art_prompt_prefix='silver hair, red eyes, 1girl'
     from MaiTrace.services.persona import resolve_persona
     persona = await resolve_persona(p)
     assert "silver hair" in persona.self_description, f"绘卷兜底未生效: {persona.self_description!r}"
+
+
+async def test_persona_reference_image_path():
+    """reference_image_path 绝对路径 + 文件存在 → 进 Persona。"""
+    # 用 smoke_test.py 自己当一个"存在的文件"
+    test_file = os.path.abspath(__file__)
+    p = _make_plugin(art_reference_path=test_file)
+    from MaiTrace.services.persona import resolve_persona
+    persona = await resolve_persona(p)
+    assert persona.reference_image_path == test_file, persona.reference_image_path
+
+
+async def test_persona_reference_image_missing():
+    """reference_image_path 指向不存在的文件 → 安全降级为空。"""
+    p = _make_plugin(art_reference_path="/tmp/definitely_not_exist_xxx.jpg")
+    from MaiTrace.services.persona import resolve_persona
+    persona = await resolve_persona(p)
+    assert persona.reference_image_path == ""
 
 
 # ============================================================
@@ -451,13 +461,61 @@ async def test_collect_images_ai_with_self_desc():
     )
     assert len(images) == 2, f"应返 2 张图，实际 {len(images)}"
     assert all(b == FAKE_PNG for b in images), "返回 bytes 不匹配"
-    # 检查每次 API 调用的 prompt
     api_calls = p.ctx.api.calls
     assert len(api_calls) == 2
     for c in api_calls:
         assert c["name"] == "1021143806.mais_art_journal.generate_image"
         assert "狐妖" in c["kwargs"]["prompt"], f"prompt 缺 self_description: {c['kwargs']['prompt']!r}"
         assert "泡澡" in c["kwargs"]["prompt"], f"prompt 缺 message: {c['kwargs']['prompt']!r}"
+        # 没传 reference_image_path → 不应有 input_image_base64
+        assert "input_image_base64" not in c["kwargs"]
+        assert "strength" not in c["kwargs"]
+
+
+async def test_collect_images_img2img():
+    """传 reference_image_path → 调绘卷时附带 input_image_base64 + strength。"""
+    p = _make_plugin()
+    p.config.image.enable_image = True
+    p.config.image.image_mode = "only_ai"
+    p.config.image.image_number = 1
+    p.config.image.pic_plugin_model = "model1"
+    p.config.image.clear_image = True
+
+    # 用真实文件作参考图（smoke_test.py 自己）
+    ref_path = os.path.abspath(__file__)
+    expected_b64 = base64.b64encode(open(ref_path, "rb").read()).decode("ascii")
+
+    from MaiTrace.services.feed_image import collect_images_for_feed
+    await collect_images_for_feed(
+        p, "今天好开心",
+        self_description="银发狐妖",
+        reference_image_path=ref_path,
+    )
+    assert len(p.ctx.api.calls) == 1
+    call = p.ctx.api.calls[0]
+    assert call["kwargs"]["input_image_base64"] == expected_b64
+    assert 0.1 <= call["kwargs"]["strength"] <= 1.0
+    assert "狐妖" in call["kwargs"]["prompt"]
+
+
+async def test_collect_images_img2img_missing_file():
+    """参考图路径指向不存在的文件 → 降级文生图（不传 input_image_base64）。"""
+    p = _make_plugin()
+    p.config.image.enable_image = True
+    p.config.image.image_mode = "only_ai"
+    p.config.image.image_number = 1
+    p.config.image.pic_plugin_model = "model1"
+    p.config.image.clear_image = True
+
+    from MaiTrace.services.feed_image import collect_images_for_feed
+    images = await collect_images_for_feed(
+        p, "测试",
+        self_description="形象",
+        reference_image_path="/tmp/not_exist_xxx.jpg",  # 不存在
+    )
+    # 应仍能生成（降级 txt2img）
+    assert len(images) == 1
+    assert "input_image_base64" not in p.ctx.api.calls[0]["kwargs"]
 
 
 # ============================================================
@@ -925,13 +983,16 @@ def main():
     print("\n[B] persona 系统")
     _run("persona baseline", test_persona_baseline)
     _run("persona user self_description first", test_persona_user_self_description)
-    _run("persona art selfie fallback (explicit)", test_persona_art_fallback)
     _run("persona art selfie fallback (default on)", test_persona_art_fallback_default)
+    _run("persona reference_image_path absolute", test_persona_reference_image_path)
+    _run("persona reference_image missing → empty", test_persona_reference_image_missing)
     _run("persona multiple_reply_style sampling", test_persona_style_sampling)
     _run("persona system_prefix concat", test_persona_system_prefix)
 
     print("\n[C] 配图生成")
     _run("images: AI path with self_description", test_collect_images_ai_with_self_desc)
+    _run("images: img2img with reference", test_collect_images_img2img)
+    _run("images: missing reference → txt2img fallback", test_collect_images_img2img_missing_file)
     _run("images: AI path no self_description (bare prompt)", test_collect_images_no_self_desc)
     _run("images: emoji path skips art api", test_collect_images_emoji)
     _run("images: clear_image=False archives", test_collect_images_archive)

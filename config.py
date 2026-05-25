@@ -813,30 +813,18 @@ class PersonaSection(PluginConfigBase):
         description=(
             "自我形象/身份描述（中文，可空）。会注入到所有 LLM prompt 的开头，"
             "让 LLM 在写说说/评论/日记时知道你的外观或额外身份。"
-            "示例：\"我是银发红瞳的狐妖。\""
+            "示例：\"我是银发红瞳的狐妖。\"\n\n"
+            "**留空时自动从麦麦绘卷 (mais_art_journal) 的 [selfie].prompt_prefix 兜底**，"
+            "无需任何额外开关；绘卷未安装 / [selfie].enabled=false / prompt_prefix 为空时跳过。\n\n"
+            "配图时还会自动用绘卷 [selfie].reference_image_path 走图生图（如配置）。"
         ),
         json_schema_extra={
             "label": "自我形象描述",
-            "hint": "中文一句话，空=不注入",
+            "hint": "中文一句话，留空时自动用绘卷 selfie.prompt_prefix",
             "placeholder": "我是银发红瞳的狐妖。",
             "input_type": "textarea",
             "rows": 3,
             "order": 1,
-        },
-    )
-    use_art_selfie_prompt: bool = Field(
-        default=True,
-        description=(
-            "self_description 为空时，自动从麦麦绘卷 (mais_art_journal) 读 "
-            "selfie.prompt_prefix 作为兜底注入到所有 LLM prompt 头部。"
-            "默认开启 —— 这样不填 self_description 也能让 LLM 知道你的外观。"
-            "绘卷未安装 / [selfie].enabled=false / prompt_prefix 为空 时自动跳过。"
-            "user 填了 self_description 则永远优先用 user 的。"
-        ),
-        json_schema_extra={
-            "label": "绘卷 selfie 兜底",
-            "hint": "self_description 留空时自动用绘卷 selfie.prompt_prefix",
-            "order": 2,
         },
     )
     use_multiple_reply_style: bool = Field(

@@ -10,20 +10,24 @@
 - ``multiple_probability``：按概率从池中替换默认 reply_style
 
 加上 ``[bot]`` 的 ``nickname`` / ``alias_names``，再叠加 MaiTrace 自己的
-``[persona]`` 扩展（self_description / use_art_selfie_prompt /
-use_multiple_reply_style），就是完整人格。
+``[persona]`` 扩展（self_description / use_multiple_reply_style），就是完整人格。
 
-绘卷自拍前缀（``mais_art_journal/selfie.prompt_prefix``）作为
-``self_description`` 为空时的英文兜底。
+形象注入规则：
+
+- ``self_description`` 非空 → 用 user 填的
+- ``self_description`` 为空 → 自动从绘卷 ``mais_art_journal/[selfie].prompt_prefix`` 兜底
+- 同时无论哪种情况，配图时都会用绘卷 ``[selfie].reference_image_path`` 走图生图
+  （如果配了路径且文件存在）
 """
 
 from __future__ import annotations
 
 import logging
 from ..utils import get_logger
+import os
 import random
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, Tuple
 
 from ..utils import (
     get_global,
@@ -63,7 +67,11 @@ class Persona:
     """主程序 bot.alias_names。"""
 
     self_description: str = ""
-    """MaiTrace 扩展：自我形象描述（中文）。可能来自 persona.self_description 或绘卷 prompt_prefix 兜底。"""
+    """形象描述。user 填了用 user 的，否则用绘卷 [selfie].prompt_prefix。"""
+
+    reference_image_path: str = ""
+    """绘卷 [selfie].reference_image_path 解析后的绝对路径。空表示不可用 /
+    未配置 / 文件不存在 / 绘卷未装。配图时传给绘卷 input_image_base64 走图生图。"""
 
     def system_prefix(self) -> str:
         """构造可直接插入 prompt 头部的"自我介绍"片段。
@@ -85,25 +93,64 @@ class Persona:
 # ============================================================
 
 
-async def _get_art_selfie_prefix(ctx) -> str:
-    """从麦麦绘卷读 selfie.prompt_prefix（英文 SD prompt）。
+def _resolve_art_plugin_dir() -> str:
+    """猜测绘卷插件目录的绝对路径。
 
-    绘卷未安装、selfie 未启用、prompt_prefix 为空 → 返回空串。
+    基于约定：MaiTrace 自己在 ``plugins/MaiTrace/``，绘卷在
+    ``plugins/mais_art_journal/``（同级目录）。
+
+    Returns:
+        str: 绝对路径，如目录不存在返回空串。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))  # .../plugins/MaiTrace/services
+    plugins_dir = os.path.dirname(os.path.dirname(here))  # .../plugins
+    candidate = os.path.join(plugins_dir, "mais_art_journal")
+    return candidate if os.path.isdir(candidate) else ""
+
+
+async def _get_art_selfie_info(ctx) -> Tuple[str, str]:
+    """从麦麦绘卷读 selfie 配置。
+
+    Returns:
+        (prompt_prefix, reference_image_absolute_path)
+        - prompt_prefix: 英文 / 中文形象前缀；空字符串=没有
+        - reference_image_absolute_path: 已 resolve 的绝对路径；空字符串=没配置 /
+          文件不存在 / 绘卷未安装
+
+    绘卷未安装、selfie.enabled=false、prompt_prefix 为空 / reference_image_path
+    为空或文件缺失，都会安全降级为空字符串。
     """
     try:
         cfg = await ctx.config.get_plugin(_ART_PLUGIN_ID)
     except Exception as exc:
         logger.debug("读绘卷配置失败（可能未安装）: %s", exc)
-        return ""
+        return "", ""
     cfg = peel_envelope(cfg)
     if not isinstance(cfg, dict):
-        return ""
+        return "", ""
     selfie = cfg.get("selfie") or {}
     if not isinstance(selfie, dict):
-        return ""
+        return "", ""
     if not bool(selfie.get("enabled", True)):
-        return ""
-    return str(selfie.get("prompt_prefix", "") or "").strip()
+        return "", ""
+
+    prefix = str(selfie.get("prompt_prefix", "") or "").strip()
+
+    # reference_image_path 处理（相对路径基于绘卷插件目录）
+    raw_path = str(selfie.get("reference_image_path", "") or "").strip()
+    abs_path = ""
+    if raw_path:
+        if os.path.isabs(raw_path):
+            candidate = raw_path
+        else:
+            art_dir = _resolve_art_plugin_dir()
+            candidate = os.path.join(art_dir, raw_path) if art_dir else ""
+        if candidate and os.path.exists(candidate):
+            abs_path = candidate
+        else:
+            logger.debug("绘卷 reference_image_path 解析失败或文件不存在: %s", raw_path)
+
+    return prefix, abs_path
 
 
 # ============================================================
@@ -112,13 +159,13 @@ async def _get_art_selfie_prefix(ctx) -> str:
 
 
 async def resolve_persona(plugin) -> Persona:
-    """加载一次完整人格。
+    """加载一次完整人格 + 绘卷形象信息。
 
     Args:
         plugin: MaiTracePlugin 实例（``plugin.ctx`` / ``plugin.config`` 都要用）。
 
     Returns:
-        Persona: 包含本次抽样后的 style 与所有人格字段。
+        Persona: 含本次抽样 style + 形象描述 + 参考图路径。
     """
     ctx = plugin.ctx
 
@@ -136,11 +183,9 @@ async def resolve_persona(plugin) -> Persona:
     cfg_persona = getattr(plugin.config, "persona", None)
     use_multiple = True
     self_desc_cfg = ""
-    use_art_fallback = False
     if cfg_persona is not None:
         use_multiple = bool(getattr(cfg_persona, "use_multiple_reply_style", True))
         self_desc_cfg = (getattr(cfg_persona, "self_description", "") or "").strip()
-        use_art_fallback = bool(getattr(cfg_persona, "use_art_selfie_prompt", False))
 
     # 风格抽样
     style = default_style
@@ -152,10 +197,11 @@ async def resolve_persona(plugin) -> Persona:
     ):
         style = random.choice(multiple_styles)
 
-    # 自我形象描述：用户填的优先，否则可选地从绘卷读
-    self_description = self_desc_cfg
-    if not self_description and use_art_fallback:
-        self_description = await _get_art_selfie_prefix(ctx)
+    # 绘卷 selfie 信息（无开关、总是读）
+    art_prefix, art_ref_path = await _get_art_selfie_info(ctx)
+
+    # 形象描述：user 填了优先用 user 的，否则用绘卷 prompt_prefix
+    self_description = self_desc_cfg if self_desc_cfg else art_prefix
 
     return Persona(
         personality=personality,
@@ -164,4 +210,5 @@ async def resolve_persona(plugin) -> Persona:
         nickname=nickname,
         alias_names=alias_names,
         self_description=self_description,
+        reference_image_path=art_ref_path,
     )

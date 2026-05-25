@@ -221,11 +221,14 @@ Cookie 方式：
 ### `[persona]`（人格扩展）⭐ v3.1 新增
 | 项 | 默认 | 说明 |
 |---|---|---|
-| `self_description` | `""` | 中文自我形象描述（"我是银发红瞳的狐妖"），注入所有 prompt 头部 |
-| `use_art_selfie_prompt` | `true` | `self_description` 为空时**自动**从绘卷 `selfie.prompt_prefix` 兜底（默认开启，绘卷未装时自动跳过） |
+| `self_description` | `""` | 中文自我形象描述（例 `"我是银发红瞳的狐妖"`），注入所有 prompt 头部 |
 | `use_multiple_reply_style` | `true` | 按主程序 `personality.multiple_probability` 从备用风格池抽样替换 `reply_style`（与主程序聊天回复一致） |
 
-> **形象注入优先级**：`persona.self_description` 非空 → 用 user 填的；为空且 `use_art_selfie_prompt=true` → 自动读绘卷 `[selfie].prompt_prefix`；都没有 → 不注入。
+**形象注入与配图自动联动**（v3.1.3+，无需任何开关）：
+
+- **prompt 形象**：`persona.self_description` 非空 → 用 user 填的；为空 → 自动用绘卷 `[selfie].prompt_prefix` 兜底
+- **配图参考图**：始终自动读绘卷 `[selfie].reference_image_path`，存在时给 `generate_image` 传 `input_image_base64` + `strength=0.6`，**走图生图**（让画出来的人就是麦麦本人）
+- 绘卷未装 / `[selfie].enabled=false` / 参考图文件缺失，都会安全降级，不报错
 
 ## Routine 决策四层防线
 
