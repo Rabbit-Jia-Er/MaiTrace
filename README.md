@@ -117,8 +117,8 @@ await self.ctx.api.call(
 | 项 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 总开关 |
-| `admin_qq` ⭐v3.1.2 | `[]` | 命令管理员；空 = 所有 /zn 被拒；与 send/read.permission 独立 |
-| `http_host` / `http_port` | `127.0.0.1` / `9999` | Napcat 地址 |
+| `admin_qq` | `[]` | 命令管理员；空 = 所有 /zn 被拒；与 send/read.permission 独立 |
+| `http_host` / `http_port` | `127.0.0.1` / `9999` | Napcat 地址（HTTP服务器） |
 | `napcat_token` | `""` | Napcat HTTP token |
 | `cookie_methods` | `[adapter, napcat, clientkey, qrcode, local]` | Cookie 获取顺序；按近期成功率自动重排，qrcode/local 永远在尾部 |
 
@@ -139,7 +139,7 @@ await self.ctx.api.call(
 | `image_number` | `1` | 每条说说几张图（1-4） |
 | `pic_plugin_model` | `""` | 绘卷 `models.<id>`；留空禁用 AI |
 | `clear_image` | `true` | 上传后是否删本地副本（false 时归档到 `data/images/`） |
-| `selfie_style` ⭐v3.1.5 | `photo` | 绘卷 selfie 视角：`photo`(第三人称) / `standard`(前置自拍) / `mirror`(对镜) |
+| `selfie_style` | `photo` | 绘卷 selfie 视角：`photo`(第三人称) / `standard`(前置自拍) / `mirror`(对镜) |
 
 > **⚠️ host RPC 30 秒上限**：MaiTrace 调绘卷走 `ctx.api.call`，host 端 30 秒硬超时，会导致**说说发出但无配图**（日志：`feed_image | 调用绘卷 generate_image 异常: [E_TIMEOUT]`）。解决：在**绘卷**配置里把 `[models].<id>.default_size` 改为 `1024x1024`（通常 10s 内），或换更快的绘图模型。
 
@@ -163,7 +163,7 @@ await self.ctx.api.call(
 | `reply_prompt` / `reply_to_reply_prompt` | 见 config | 评论回复 / 链式回复模板 |
 | `processed_feeds_cache_size` / `processed_comments_cache_size` | `100` / `100` | 去重缓存上限 |
 
-### `[routine]` 日程驱动 + 严格决策 ⭐ v3.1
+### `[routine]` 日程驱动 + 严格决策
 | 项 | 默认 | 说明 |
 |---|---|---|
 | `check_interval_minutes` | `20` | 检查间隔 |
@@ -189,7 +189,7 @@ await self.ctx.api.call(
 | `style` | `diary` | `diary` / `qqzone` / `custom` |
 | `min_message_count` | `3` | 总消息门槛 |
 | `min_messages_per_chat` | `3` | 单聊门槛（剔水群） |
-| `per_message_max_chars` ⭐v3.1 | `200` | timeline 单条消息截断（0=不截断） |
+| `per_message_max_chars` | `200` | timeline 单条消息截断（0=不截断） |
 | `min_word_count` / `max_word_count` | `250` / `350` | 字数区间 |
 | `filter_mode` / `target_chats` | `all` / `""` | 聊天过滤（all / whitelist / blacklist） |
 | `custom_prompt` | `""` | `style=custom` 时的模板 |
@@ -201,7 +201,7 @@ await self.ctx.api.call(
 | `api_url` | `https://api.siliconflow.cn/v1` | OpenAI 兼容 base url |
 | `api_key` / `model_name` / `temperature` / `api_timeout` | — / `Pro/deepseek-ai/DeepSeek-V3` / `0.7` / `300` | 长 prompt 日记建议 timeout ≥ 300 |
 
-### `[persona]` 人格扩展 ⭐ v3.1
+### `[persona]` 人格扩展
 | 项 | 默认 | 说明 |
 |---|---|---|
 | `self_description` | `""` | 中文形象描述。**仅注入文本 LLM prompt**（说说/评论/日记）。空时自动从绘卷 `[selfie].prompt_prefix` 兜底 |
