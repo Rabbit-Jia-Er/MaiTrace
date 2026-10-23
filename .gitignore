@@ -16,4 +16,11 @@ data/
 
 # IDE & Tools
 .claude/
+.pytest_cache/
+.uv-cache/
 nul
+
+# Local auxiliary documentation; keep repository docs in README.md
+/changelog.md
+/config.example.toml
+/docs/

@@ -1,23 +1,7 @@
-"""MaiTrace 一键离线 smoke 测试。
+"""MaiTrace 的离线 smoke 检查：当前 SDK 组件、精简配置、配图、Routine 和命令权限。
 
-不需要启动 MaiBot 主程序，全部 mock。覆盖：
-
-- 所有改动文件语法合法
-- 插件实例化无 DeprecationWarning
-- 5 个组件（zn / send_feed / read_feed / 3 个 @API）正确注册
-- config 10 个 section 齐全，含 persona 和 diary.per_message_max_chars
-- resolve_persona：4 个 personality 字段 + bot.nickname/alias_names + multiple 抽样 + 绘卷 selfie 兜底
-- collect_images_for_feed：self_description 拼进生图 prompt + 返回 bytes + 归档开关
-- 表情包路径不调绘卷 API
-- TimelineBuilder：per_message_max_chars 截断
-- 日记 prompt：含 self_description 行
-- Routine PlanningPluginProvider：has_activity / 无活动 / API 异常三分支
-- Routine _check_diary 时间窗判定（首次启动 / 已跨越 / 同日不重复）
-- send_feed_api / publish_topic_api 调用契约
-
-用法（项目根）：
-    .venv/Scripts/python.exe plugins/MaiTrace/tests/smoke_test.py
-
+不启动 MaiBot，不访问 QQ 空间；外部能力全部替换为内存结果。
+在 MaiBot 根目录运行 .venv/Scripts/python.exe plugins/MaiTrace/tests/smoke_test.py。
 成功退出码 0，失败 1。
 """
 
@@ -33,6 +17,8 @@ import time
 import traceback
 import warnings
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple
 
 
@@ -130,6 +116,21 @@ class MockAPICap:
         self._image_b64 = image_b64
         self._planning_payload = planning_payload
         self._planning_error: Exception | None = None
+        # v4.0：adapter 取 cookie 支持 napcat / snowluma 双探测。
+        # _adapter_ids 决定 api.list() 报告哪些插件提供 get_cookies；
+        # _adapter_ok 决定哪些插件真的能返回 cookie（用来模拟"装了但拿不到"）。
+        self._adapter_ids: List[str] = []
+        self._adapter_ok: set[str] = set()
+
+    def set_adapters(self, ids: List[str], ok: List[str] | None = None):
+        """配置模拟的适配器环境。
+
+        Args:
+            ids: api.list() 中报告提供 get_cookies 的 plugin_id 列表。
+            ok: 其中真正能返回 cookie 的；省略时全部可用。
+        """
+        self._adapter_ids = list(ids)
+        self._adapter_ok = set(ids if ok is None else ok)
 
     def set_planning_error(self, exc: Exception):
         self._planning_error = exc
@@ -137,6 +138,20 @@ class MockAPICap:
     def set_planning_payload(self, payload: Dict):
         self._planning_payload = payload
         self._planning_error = None
+
+    async def list(self, *, plugin_id: str = ""):
+        del plugin_id
+        return [
+            {
+                "name": "adapter.napcat.account.get_cookies",
+                "full_name": f"{pid}.adapter.napcat.account.get_cookies",
+                "plugin_id": pid,
+                "version": "1",
+                "public": True,
+                "enabled": True,
+            }
+            for pid in self._adapter_ids
+        ]
 
     async def call(self, api_name: str, **kwargs):
         self.calls.append({"name": api_name, "kwargs": kwargs})
@@ -153,6 +168,11 @@ class MockAPICap:
             if self._planning_error is not None:
                 raise self._planning_error
             return self._planning_payload or {"has_activity": False}
+        if api_name.endswith(".adapter.napcat.account.get_cookies"):
+            owner = api_name[: -len(".adapter.napcat.account.get_cookies")]
+            if owner in self._adapter_ok:
+                return {"status": "ok", "data": {"cookies": "p_skey=fake; uin=o123456"}}
+            return {"status": "failed", "data": {}}
         return None
 
 
@@ -180,8 +200,8 @@ class MockLLMCap:
     def set_exception(self, exc: Exception):
         self._exc = exc
 
-    async def generate(self, prompt, model="", temperature=0.7, max_tokens=2000, **kwargs):
-        self.calls.append({"prompt": prompt, "model": model, "temperature": temperature})
+    async def generate(self, prompt, model="", temperature=0.7, max_tokens=2000, *, task_name="", **kwargs):
+        self.calls.append({"prompt": prompt, "task_name": task_name, "temperature": temperature, **kwargs})
         if self._exc is not None:
             raise self._exc
         return self._response
@@ -203,6 +223,31 @@ class MockCtx:
         self.emoji = MockEmojiCap()
         self.llm = MockLLMCap()
         self.send = MockSendCap()
+        self.capability_calls: list[dict] = []
+
+    async def call_capability(self, capability: str, timeout_ms: int | None = None, **kwargs):
+        """模拟 SDK 的底层能力入口。
+
+        模型代理与跨插件 API 最终都通过这个入口调用 Host；
+        生图需要分别设置目标 API 参数和 RPC 超时。
+        """
+        self.capability_calls.append({
+            "capability": capability,
+            "timeout_ms": timeout_ms,
+            "args": dict(kwargs),
+        })
+        if capability == "llm.generate":
+            return await self.llm.generate(
+                kwargs.get("prompt", ""),
+                task_name=kwargs.get("task_name", ""),
+                temperature=kwargs.get("temperature", 0.7),
+                max_tokens=kwargs.get("max_tokens", 2000),
+            )
+        if capability == "api.call":
+            return await self.api.call(kwargs.get("api_name", ""), **(kwargs.get("args") or {}))
+        if capability == "api.list":
+            return await self.api.list()
+        raise AssertionError(f"MockCtx 未实现的 capability: {capability}")
 
 
 def _make_plugin(**ctx_kwargs):
@@ -211,6 +256,8 @@ def _make_plugin(**ctx_kwargs):
     p = P.create_plugin()
     p.set_plugin_config(p.build_default_config())
     p._ctx = MockCtx(**ctx_kwargs)
+    p._test_data_directory = TemporaryDirectory(prefix="maitrace-smoke-")
+    p._ctx.paths = SimpleNamespace(data_dir=Path(p._test_data_directory.name))
     return p
 
 
@@ -223,7 +270,7 @@ def test_syntax():
     files = [
         "_manifest.json",  # 用 json.load 验证
         "plugin.py",
-        "config.py",
+        "config/__init__.py",
         "handlers/actions.py",
         "handlers/apis.py",
         "handlers/commands.py",
@@ -231,14 +278,16 @@ def test_syntax():
         "services/feed_image.py",
         "services/feed_publish.py",
         "services/feed_read.py",
+        "services/llm_runner.py",
         "services/monitor.py",
         "services/persona.py",
         "services/prompts.py",
         "services/routine.py",
-        "services/diary/pipeline.py",
-        "services/diary/prompts.py",
-        "services/diary/timeline.py",
+        "utils/__init__.py",
+        "utils/untrusted.py",
     ]
+    files.extend(str(path.relative_to(_PLUGIN_DIR)) for folder in ("config", "services", "handlers", "utils")
+                 for path in (_PLUGIN_DIR / folder).rglob("*.py"))
     import json
     for rel in files:
         full = _PLUGIN_DIR / rel
@@ -264,29 +313,44 @@ def test_create_plugin_clean():
 
 
 # ============================================================
-# 测试 3. 组件注册完整 + 5 个组件齐全
+# 测试 3. 当前组件注册和退役组件检查
 # ============================================================
 
 
 def test_components():
     import MaiTrace.plugin as P
     inst = P.create_plugin()
+    inst.set_plugin_config(inst.build_default_config())
     components = inst.get_components()
     names_and_types = {(c["name"], c["type"]) for c in components}
     expected = {
         ("zn", "COMMAND"),
         ("send_feed", "TOOL"),
         ("read_feed", "TOOL"),
+        ("recall_qzone_activity", "TOOL"),
         ("send_feed_api", "API"),
         ("get_feeds_list_api", "API"),
         ("publish_topic_api", "API"),
+        ("get_planning_status_v6", "TOOL"),
+        ("generate_schedule_v6", "TOOL"),
+        ("update_schedule_v6", "TOOL"),
+        ("get_current_activity", "API"),
+        ("get_life_state", "API"),
+        ("get_current_scene", "API"),
+        ("get_environment_snapshot", "API"),
+        ("create_proactive_opportunity", "API"),
     }
     missing = expected - names_and_types
-    extra = names_and_types - expected
     if missing:
         raise AssertionError(f"缺少组件: {missing}")
-    if extra:
-        raise AssertionError(f"多余组件: {extra}")
+    names = {entry["name"] for entry in components}
+    retired = {"manage_goal_v6", "apply_schedule_v6", "get_user_relationship", "web_search", "browse_web", "emotion_analysis"}
+    assert names.isdisjoint(retired)
+    assert {"maitrace_planner_life", "maitrace_replyer_life", "maitrace_life"} <= names
+    assert not names.intersection({"maitrace_receive", "maitrace_before_send", "maitrace_after_send"})
+    inst.config.messaging.enabled = True
+    enabled_names = {entry["name"] for entry in inst.get_components()}
+    assert {"maitrace_receive", "maitrace_before_send", "maitrace_after_send"} <= enabled_names
     # API 必须 public=True
     for c in components:
         if c["type"] == "API":
@@ -294,7 +358,7 @@ def test_components():
 
 
 # ============================================================
-# 测试 4. config 10 个 section 齐全，persona / diary.per_message_max_chars 在
+# 测试 4. 当前配置段齐全
 # ============================================================
 
 
@@ -303,33 +367,160 @@ def test_config_sections():
     inst = P.create_plugin()
     cfg = inst.build_default_config()
     expected_sections = {
-        "plugin", "send", "image", "read", "monitor",
-        "routine", "llm", "diary", "persona", "diary_model",
+        "plugin", "send", "image", "read", "monitor", "routine", "llm", "persona",
+        "schedule", "inject", "goal_cleanup", "life", "environment", "messaging",
     }
-    got = set(cfg.keys())
-    if expected_sections - got:
-        raise AssertionError(f"缺少 section: {expected_sections - got}")
-    # persona 字段
-    p = cfg["persona"]
-    for k in ("self_description", "use_multiple_reply_style"):
-        assert k in p, f"persona 段缺 {k}"
-    # diary.per_message_max_chars 默认 200
-    assert cfg["diary"]["per_message_max_chars"] == 200, "默认 per_message_max_chars 应为 200"
+    assert set(cfg) == expected_sections
+    assert {"self_description", "use_multiple_reply_style"} <= cfg["persona"].keys()
+    assert "adapter_priority" in cfg["plugin"]
+    assert cfg["life"]["diary_enabled"] is True
+    assert not any(key.startswith("scheduled_") for key in cfg["routine"])
+    assert not {"private_debounce", "group_debounce", "text_wait_seconds"} & cfg["messaging"].keys()
+
+
+# ============================================================
+# 测试 4b. 旧配置升级
+# ============================================================
+
+
+def test_migrate_legacy_to_current():
+    import MaiTrace.plugin as P
+    inst = P.create_plugin()
+    old = {
+        "plugin": {"config_version": "3.1.0", "enabled": True},
+        "send": {"enable_image": False},
+        "diary": {"enabled": True},
+        "diary_model": {"api_key": "sk-should-be-dropped", "api_timeout": 420},
+        "information": {"enabled": True},
+    }
+    normalized, changed = inst.normalize_plugin_config(old)
+    assert changed
+    assert normalized["plugin"]["config_version"] == inst.build_default_config()["plugin"]["config_version"]
+    assert normalized["image"]["enable_image"] is False
+    assert {"diary", "diary_model", "information"}.isdisjoint(normalized)
+    assert "sk-should-be-dropped" not in repr(normalized)
+
+
+# ============================================================
+# 测试 4c. adapter 探测：napcat / snowluma 同一份代码通吃
+# ============================================================
+
+
+def _reset_cookie_state(plugin):
+    """重置当前实例状态，并拦掉统计落盘。
+
+    ``fetch_cookies_by_adapter`` 会调 ``record_cookie_attempt`` 写
+    ``data/cookie_stats.json``；冒烟测试不应该污染真实数据目录，所以在这里把它
+    换成内存收集器（返回值供用例断言"按 adapter 分别记成功率"）。
+    """
+    plugin.persistence.cookie_state.update({
+        "last_save_time": 0.0, "last_method": "", "last_error": "",
+        "uin": "", "adapter_id": "",
+    })
+    recorded: List[Tuple[str, bool]] = []
+
+    async def _fake_record(method: str, success: bool) -> None:
+        recorded.append((method, success))
+
+    plugin.persistence.record_cookie_attempt = _fake_record
+    return recorded
+
+
+def test_adapter_discovery_napcat_only():
+    """只装 napcat-adapter：应命中它。"""
+    from MaiTrace.services.cookie import fetch_cookies_by_adapter
+    p = _make_plugin()
+    _reset_cookie_state(p)
+    p.ctx.api.set_adapters(["maibot-team.napcat-adapter"])
+    got = asyncio.run(fetch_cookies_by_adapter(p.ctx, storage=p.persistence))
+    assert got and got.get("p_skey") == "fake", f"napcat 环境应取到 cookie，实际 {got}"
+    from MaiTrace.services import cookie as C
+    assert p.persistence.cookie_state["adapter_id"] == "maibot-team.napcat-adapter"
+
+
+def test_adapter_discovery_snowluma_only():
+    """只装 snowluma-adapter：**不改任何配置**也应该命中（P0 的核心验收条件）。"""
+    from MaiTrace.services.cookie import fetch_cookies_by_adapter
+    p = _make_plugin()
+    _reset_cookie_state(p)
+    p.ctx.api.set_adapters(["maibot-team.snowluma-adapter"])
+    got = asyncio.run(fetch_cookies_by_adapter(p.ctx, storage=p.persistence))
+    assert got and got.get("p_skey") == "fake", f"snowluma 环境应取到 cookie，实际 {got}"
+    from MaiTrace.services import cookie as C
+    assert p.persistence.cookie_state["adapter_id"] == "maibot-team.snowluma-adapter", (
+        f"应命中 snowluma，实际 {p.persistence.cookie_state['adapter_id']}"
+    )
+    # 探测必须走 api.list，不能靠写死 plugin_id
+    assert any(
+        c["name"].startswith("maibot-team.snowluma-adapter.")
+        for c in p.ctx.api.calls
+    ), "应向 snowluma-adapter 发起调用"
+
+
+def test_adapter_priority_respected():
+    """两个都装时，adapter_priority 决定先试哪个（支持只写后缀）。"""
+    from MaiTrace.services.cookie import fetch_cookies_by_adapter
+    p = _make_plugin()
+    _reset_cookie_state(p)
+    both = ["maibot-team.napcat-adapter", "maibot-team.snowluma-adapter"]
+    p.ctx.api.set_adapters(both)
+    got = asyncio.run(fetch_cookies_by_adapter(p.ctx, ["snowluma-adapter"], storage=p.persistence))
+    assert got, "应取到 cookie"
+    first_call = next(
+        c["name"] for c in p.ctx.api.calls
+        if c["name"].endswith(".adapter.napcat.account.get_cookies")
+    )
+    assert first_call.startswith("maibot-team.snowluma-adapter."), (
+        f"偏好 snowluma 时应先试它，实际先试了 {first_call}"
+    )
+
+
+def test_adapter_falls_through_to_next():
+    """装了两个但第一个取不到时，应继续试第二个而不是直接失败。"""
+    from MaiTrace.services.cookie import fetch_cookies_by_adapter
+    p = _make_plugin()
+    recorded = _reset_cookie_state(p)
+    p.ctx.api.set_adapters(
+        ["maibot-team.napcat-adapter", "maibot-team.snowluma-adapter"],
+        ok=["maibot-team.snowluma-adapter"],
+    )
+    got = asyncio.run(fetch_cookies_by_adapter(p.ctx, storage=p.persistence))
+    assert got, "第一个失败应继续试第二个"
+    from MaiTrace.services import cookie as C
+    assert p.persistence.cookie_state["adapter_id"] == "maibot-team.snowluma-adapter"
+    # 成功率按 adapter 分别记：napcat 记失败、snowluma 记成功
+    assert ("adapter:maibot-team.napcat-adapter", False) in recorded, f"实际记录 {recorded}"
+    assert ("adapter:maibot-team.snowluma-adapter", True) in recorded, f"实际记录 {recorded}"
+
+
+def test_adapter_none_installed():
+    """一个 adapter 都没装：应返回 None 而不是抛异常。"""
+    from MaiTrace.services.cookie import fetch_cookies_by_adapter
+    p = _make_plugin()
+    _reset_cookie_state(p)
+    p.ctx.api.set_adapters([])
+    got = asyncio.run(fetch_cookies_by_adapter(p.ctx, storage=p.persistence))
+    assert got is None, f"无 adapter 时应返回 None，实际 {got}"
 
 
 # ============================================================
 # 测试 5. _manifest.json 关键字段
 # ============================================================
 
-
 def test_manifest():
     import json
     manifest = json.loads((_PLUGIN_DIR / "_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("3.1."), f"version 应 3.1.x，实际 {manifest['version']}"
+    assert manifest["version"] == "6.2.4", f"version 应 6.2.4，实际 {manifest['version']}"
     assert manifest["host_application"]["max_version"] != "1.0.0", "host max 不能写死 1.0.0"
     caps = set(manifest["capabilities"])
     for cap in ("chat.get_stream_by_user_id", "api.call"):
         assert cap in caps, f"manifest capabilities 漏 {cap}"
+    # api.list 与 api.call 是两个独立 capability（host/authorization.py:44 逐个校验）。
+    # services/cookie.py 的 adapter 探测走 ctx.api.list()，漏声明会直接 PermissionError。
+    assert "api.list" in caps, "adapter 探测需要 api.list capability"
+    # 日记不再直连第三方 API，openai 依赖应已移除
+    dep_names = {d.get("name", "").lower() for d in manifest.get("dependencies", [])}
+    assert "openai" not in dep_names, "v4.0 已删除日记直连，不应再依赖 openai"
 
 
 # ============================================================
@@ -448,6 +639,7 @@ async def test_collect_images_ai_path():
     """AI 路径：调绘卷只传场景，selfie_mode=True，默认 selfie_style=photo。"""
     p = _make_plugin()
     p.config.image.enable_image = True
+    p.config.image.ai_content_mode = "selfie"
     p.config.image.image_mode = "only_ai"
     p.config.image.image_number = 2
     p.config.image.pic_plugin_model = "model1"
@@ -473,6 +665,7 @@ async def test_collect_images_img2img_with_reference():
     """传 reference_image_path → 读文件转 base64 + input_image_base64。"""
     p = _make_plugin()
     p.config.image.enable_image = True
+    p.config.image.ai_content_mode = "selfie"
     p.config.image.image_mode = "only_ai"
     p.config.image.image_number = 1
     p.config.image.pic_plugin_model = "model1"
@@ -493,6 +686,7 @@ async def test_collect_images_selfie_style_configurable():
     """[image].selfie_style 可改成 standard/mirror。"""
     p = _make_plugin()
     p.config.image.enable_image = True
+    p.config.image.ai_content_mode = "selfie"
     p.config.image.image_mode = "only_ai"
     p.config.image.image_number = 1
     p.config.image.pic_plugin_model = "model1"
@@ -524,18 +718,12 @@ async def test_collect_images_archive():
     p.config.image.pic_plugin_model = "model1"
     p.config.image.clear_image = False
 
-    from MaiTrace.services.persistence import get_images_dir
-    archive = get_images_dir()
-    for f in os.listdir(archive):
-        if f.startswith("pic_plugin_") and f.endswith(".png"):
-            os.remove(archive / f)
+    archive = p.persistence.get_images_dir()
 
     from MaiTrace.services.feed_image import collect_images_for_feed
     await collect_images_for_feed(p, "归档测试")
     archived = [f for f in os.listdir(archive) if f.startswith("pic_plugin_")]
     assert len(archived) == 2
-    for f in archived:
-        os.remove(archive / f)
 
 
 async def test_collect_images_disabled():
@@ -547,60 +735,13 @@ async def test_collect_images_disabled():
 
 
 # ============================================================
-# 测试 16. TimelineBuilder per_message_max_chars 截断
-# ============================================================
-
-
-def test_timeline_truncate():
-    from MaiTrace.services.diary.timeline import TimelineBuilder
-    long_text = "x" * 500
-    msg = {
-        "timestamp": time.time(),
-        "processed_plain_text": long_text,
-        "message_info": {"user_info": {"user_id": "999", "user_nickname": "他"}},
-    }
-    # 200 截断
-    tb = TimelineBuilder(per_message_max_chars=200)
-    result = tb.build([msg])
-    assert "x" * 200 + "..." in result, "应该被截断到 200 字 + ..."
-    # 0 不截断
-    tb2 = TimelineBuilder(per_message_max_chars=0)
-    result2 = tb2.build([msg])
-    assert "x" * 500 in result2, "0 应该不截断"
-
-
-# ============================================================
-# 测试 17. diary prompts 含 self_description 行
-# ============================================================
-
-
-def test_diary_prompt_has_self_description():
-    from MaiTrace.services.diary.prompts import build_diary_prompt, build_qqzone_prompt
-    args = dict(
-        date="2026-05-25", timeline="X 说: hi",
-        date_with_weather="2026年5月25日,星期一,晴。",
-        target_length=300, personality_desc="是狐妖",
-        style_desc="慵懒优雅", name="麦麦",
-    )
-    # 带 self_description
-    p1 = build_diary_prompt(self_description="银发红瞳", **args)
-    assert "关于我的形象" in p1 and "银发红瞳" in p1
-    # 不带 → 不出现该行
-    p2 = build_diary_prompt(self_description="", **args)
-    assert "关于我的形象" not in p2
-
-    p3 = build_qqzone_prompt(self_description="银发红瞳", **args)
-    assert "关于我的形象" in p3 and "银发红瞳" in p3
-
-
-# ============================================================
 # 测试 18. Routine PlanningPluginProvider 三分支
 # ============================================================
 
 
 async def test_planning_provider_has_activity():
     p = _make_plugin()
-    p.ctx.api.set_planning_payload({
+    payload = {
         "has_activity": True,
         "activity": {
             "name": "工作",
@@ -611,29 +752,31 @@ async def test_planning_provider_has_activity():
         "next_activities": [],
         "as_of": "2026-05-25T10:00:00",
         "timezone": "Asia/Shanghai",
-    })
-    from MaiTrace.services.routine import PlanningPluginProvider, ActivityType
-    prov = PlanningPluginProvider(p)
+    }
+    p._schedule_engine = SimpleNamespace(current_activity_payload=lambda: payload)
+    from MaiTrace.services.routine import InternalScheduleProvider, ActivityType
+    prov = InternalScheduleProvider(p)
     activity = await prov.get_current_activity()
     assert activity is not None
     assert activity.activity_type == ActivityType.WORKING
     assert "代码" in activity.description
+    assert not p.ctx.api.calls, "内部日程不得请求已退役插件"
 
 
 async def test_planning_provider_no_activity():
     p = _make_plugin()
-    p.ctx.api.set_planning_payload({"has_activity": False})
-    from MaiTrace.services.routine import PlanningPluginProvider
-    prov = PlanningPluginProvider(p)
+    p._schedule_engine = SimpleNamespace(current_activity_payload=lambda: {"has_activity": False})
+    from MaiTrace.services.routine import InternalScheduleProvider
+    prov = InternalScheduleProvider(p)
     activity = await prov.get_current_activity()
     assert activity is None
 
 
 async def test_planning_provider_api_error():
     p = _make_plugin()
-    p.ctx.api.set_planning_error(PermissionError("plugin not installed"))
-    from MaiTrace.services.routine import PlanningPluginProvider
-    prov = PlanningPluginProvider(p)
+    p._schedule_engine = None
+    from MaiTrace.services.routine import InternalScheduleProvider
+    prov = InternalScheduleProvider(p)
     activity = await prov.get_current_activity()
     assert activity is None  # 不抛，返回 None
 
@@ -718,7 +861,7 @@ async def test_hard_block_silent_hours():
 
     # 关闭静默卡 post 后，应继续走 LLM（mock 无 ctx.llm，会失败但 hard_blocked 应为 False）
     p.config.routine.respect_silent_hours = False
-    decision2 = await runner._llm_decide(activity, "post")
+    await runner._llm_decide(activity, "post")
     hist2 = runner.get_decision_history()
     assert hist2[-1]["hard_blocked"] is False
 
@@ -757,60 +900,6 @@ async def test_max_chance_dice():
     hist2 = runner.get_decision_history()
     assert hist2[-1]["dice_skipped"] is False
     assert hist2[-1]["decision"] is True
-
-
-# ============================================================
-# 测试 19. Routine._check_diary 时间窗判定（原 19）
-# ============================================================
-
-
-async def test_check_diary_time_window():
-    p = _make_plugin()
-    p.config.diary.enabled = True
-    p.config.diary.schedule_time = "23:30"
-
-    from MaiTrace.services.routine import RoutineRunner
-    runner = RoutineRunner(p)
-
-    # 用 monkeypatch 替换 _generate_diary 防止真跑
-    triggered = []
-    async def fake_generate(*a, **kw):
-        triggered.append(time.time())
-    runner._generate_diary = fake_generate
-
-    # 场景 1: 首次启动 (last_check_ts=0)，当前已过 23:30 → 应触发
-    today = datetime.date.today()
-    target_ts = datetime.datetime.combine(today, datetime.time(23, 30)).timestamp()
-
-    # mock datetime.now 太复杂；改成直接调用并断言不抛
-    # 我们检查行为：last_diary_date 在触发后应等于 today
-    runner._last_check_ts = 0.0
-    runner.last_diary_date = None
-
-    # 直接调一次（取决于当前真实时间是否已过 23:30）
-    # 改为操纵 schedule_time 让它一定触发：用比当前时间早一分钟的目标
-    now = datetime.datetime.now()
-    one_min_ago = now - datetime.timedelta(minutes=1)
-    p.config.diary.schedule_time = one_min_ago.strftime("%H:%M")
-
-    # 模拟前一轮检查时间在两分钟前
-    runner._last_check_ts = (now - datetime.timedelta(minutes=2)).timestamp()
-    await runner._check_diary()
-    await asyncio.sleep(0.05)  # 等 create_task 跑一下
-    assert runner.last_diary_date == today, "跨过 target 应触发"
-    assert len(triggered) == 1, f"应触发 1 次，实际 {len(triggered)}"
-
-    # 场景 2: 同一天再次调用 → 不重复触发
-    await runner._check_diary()
-    await asyncio.sleep(0.05)
-    assert len(triggered) == 1, "同一天不重复触发"
-
-    # 场景 3: enabled=False → 不触发
-    runner.last_diary_date = None
-    p.config.diary.enabled = False
-    await runner._check_diary()
-    await asyncio.sleep(0.05)
-    assert len(triggered) == 1
 
 
 # ============================================================
@@ -895,13 +984,13 @@ def test_is_admin_function():
 async def test_publish_topic_api_contract():
     p = _make_plugin()
     # 隔离副作用：mock cookie 流程，避免真实打 napcat HTTP / 扫码登录
-    import MaiTrace.services.feed_publish as fp_mod
+    import MaiTrace.services.qzone_publisher as publisher_mod
 
     async def fake_renew(*args, **kwargs):
         return False  # cookie 失败 → send_feed 早返回
 
-    orig_renew = fp_mod.renew_cookies
-    fp_mod.renew_cookies = fake_renew
+    orig_renew = publisher_mod.renew_cookies
+    publisher_mod.renew_cookies = fake_renew
     try:
         from MaiTrace.handlers.apis import publish_topic_api
         result = await publish_topic_api(p, topic="测试", current_activity="")
@@ -911,7 +1000,7 @@ async def test_publish_topic_api_contract():
         assert isinstance(result["message"], str) and result["message"]
         assert "更新 cookies" in result["message"] or "失败" in result["message"]
     finally:
-        fp_mod.renew_cookies = orig_renew
+        publisher_mod.renew_cookies = orig_renew
 
 
 # ============================================================
@@ -926,9 +1015,15 @@ def main():
     print("\n[A] 静态检查")
     _run("syntax: all changed files parse", test_syntax)
     _run("plugin: create_plugin no DeprecationWarning", test_create_plugin_clean)
-    _run("components: 6 components registered", test_components)
-    _run("config: 10 sections present", test_config_sections)
-    _run("manifest: version 3.1.0 + capabilities", test_manifest)
+    _run("components: v6 features and optional messaging hooks", test_components)
+    _run("config: original and v6 sections present", test_config_sections)
+    _run("config: legacy to current migration", test_migrate_legacy_to_current)
+    _run("adapter: napcat-only discovery", test_adapter_discovery_napcat_only)
+    _run("adapter: snowluma-only discovery (no config change)", test_adapter_discovery_snowluma_only)
+    _run("adapter: adapter_priority respected", test_adapter_priority_respected)
+    _run("adapter: fall through + per-adapter stats", test_adapter_falls_through_to_next)
+    _run("adapter: none installed → None", test_adapter_none_installed)
+    _run("manifest: version 6.2.4 + capabilities", test_manifest)
 
     print("\n[B] persona 系统")
     _run("persona baseline", test_persona_baseline)
@@ -947,19 +1042,15 @@ def main():
     _run("images: clear_image=False archives", test_collect_images_archive)
     _run("images: enable_image=False empty", test_collect_images_disabled)
 
-    print("\n[D] 日记")
-    _run("diary timeline per_message_max_chars truncate", test_timeline_truncate)
-    _run("diary prompt has self_description line", test_diary_prompt_has_self_description)
 
     print("\n[E] Routine")
     _run("routine planning has_activity", test_planning_provider_has_activity)
     _run("routine planning no_activity", test_planning_provider_no_activity)
-    _run("routine planning api_error returns None", test_planning_provider_api_error)
+    _run("routine internal engine not initialized", test_planning_provider_api_error)
     _run("routine decision parser strict", test_llm_decision_parser)
     _run("routine hard block: activity blacklist", test_hard_block_activity_blacklist)
     _run("routine hard block: silent hours", test_hard_block_silent_hours)
     _run("routine max_chance dice", test_max_chance_dice)
-    _run("routine _check_diary time window", test_check_diary_time_window)
 
     print("\n[F] 跨插件 API")
     _run("publish_topic_api contract", test_publish_topic_api_contract)

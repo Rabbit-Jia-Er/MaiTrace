@@ -12,22 +12,41 @@ like / comment / reply / get_list / monitor_get_list / get_send_history。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Optional
+import asyncio
 import base64
 import json
-import logging
-from ..utils import get_logger
 import time
-from typing import Any, Awaitable, Callable, Optional
 
 import bs4
 import httpx
 import json5
+
+from ..utils import get_logger
+from .persistence import PluginPersistence
 
 logger = get_logger(__name__)
 
 
 ImageDescriptionProvider = Callable[[str], Awaitable[str]]
 """签名：async def(image_base64: str) -> str。返回图片描述文本。"""
+
+
+class PublicationUncertainError(RuntimeError):
+    """发布请求已经发出，但未拿到可确认的结果；禁止自动重发。"""
+
+
+@dataclass
+class PublicationState:
+    """单次发布的阶段，便于取消任务时区分未发出与结果待核对。"""
+
+    stage: str = "preparing"
+    tid: str = ""
+
+    @property
+    def uncertain(self) -> bool:
+        return self.stage in {"submitting", "uncertain"}
 
 
 # ===== 辅助函数 =====
@@ -222,8 +241,12 @@ class QzoneAPI:
         text = res.text
         return json.loads(text[text.find("{"): text.rfind("}") + 1])
 
-    async def publish_emotion(self, content: str, images: Optional[list[bytes]] = None) -> str:
-        """发说说，返回 tid。失败抛异常。"""
+    async def publish_emotion(
+        self, content: str, images: Optional[list[bytes]] = None,
+        *, publication: Optional[PublicationState] = None,
+    ) -> str:
+        """先完整上传图片，再发说说。明确失败与结果不明分别抛出异常。"""
+        state = publication if publication is not None else PublicationState()
         images = images or []
         post_data: dict[str, Any] = {
             "syn_tweet_verson": "1",
@@ -252,21 +275,42 @@ class QzoneAPI:
             post_data["richtype"] = "1"
             post_data["richval"] = "\t".join(richvals)
 
-        res = await self._do(
-            "POST",
-            self.EMOTION_PUBLISH_URL,
-            params={"g_tk": self.gtk2, "uin": self.uin},
-            data=post_data,
-            headers={
-                "referer": f"https://user.qzone.qq.com/{self.uin}",
-                "origin": "https://user.qzone.qq.com",
-            },
-        )
+        state.stage = "submitting"
+        try:
+            res = await self._do(
+                "POST", self.EMOTION_PUBLISH_URL,
+                params={"g_tk": self.gtk2, "uin": self.uin}, data=post_data,
+                headers={"referer": f"https://user.qzone.qq.com/{self.uin}", "origin": "https://user.qzone.qq.com"},
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            state.stage = "rejected"  # 连接尚未建立，发布请求未发出。
+            raise
+        except asyncio.CancelledError:
+            state.stage = "uncertain"
+            raise
+        except Exception as exc:
+            state.stage = "uncertain"
+            raise PublicationUncertainError("QQ 空间发布结果待核对，请检查空间后再决定是否重发") from exc
         if res.status_code != 200:
-            raise RuntimeError(f"发表说说失败: HTTP {res.status_code} {res.text[:200]}")
-        if _extract_code_json(res.text) != 0:
-            raise RuntimeError(f"发表说说失败: {res.text[:200]}")
-        return res.json()["tid"]
+            state.stage = "uncertain"
+            raise PublicationUncertainError(f"QQ 空间发布结果待核对: HTTP {res.status_code}")
+        try:
+            payload = res.json()
+        except ValueError as exc:
+            state.stage = "uncertain"
+            raise PublicationUncertainError("QQ 空间发布响应无法解析，请核对空间记录") from exc
+        if not isinstance(payload, dict) or "code" not in payload:
+            state.stage = "uncertain"
+            raise PublicationUncertainError("QQ 空间未返回发布状态，请核对空间记录")
+        if payload["code"] != 0:
+            state.stage = "rejected"
+            raise RuntimeError(f"发表说说被拒绝: {payload.get('message', payload['code'])}")
+        if not payload.get("tid"):
+            state.stage = "uncertain"
+            raise PublicationUncertainError("QQ 空间返回成功但缺少动态 ID，请核对空间记录")
+        state.stage = "confirmed"
+        state.tid = str(payload["tid"])
+        return state.tid
 
     async def like(self, fid: str, target_qq: str) -> bool:
         """点赞指定说说。"""
@@ -382,7 +426,7 @@ class QzoneAPI:
             return False
         return True
 
-    async def get_list(self, target_qq: str, num: int) -> list[dict[str, Any]]:
+    async def get_list(self, target_qq: str, num: int, *, filter_commented: bool = True) -> list[dict[str, Any]]:
         """获取指定 QQ 的说说列表。失败返回 [{"error": "..."}]。"""
         logger.info("即将获取 %s 的说说列表...", target_qq)
         res = await self._do(
@@ -438,7 +482,7 @@ class QzoneAPI:
                     if uin_nickname == comment.get("name") and target_qq != self.uin:
                         is_commented = True
                         break
-                if is_commented:
+                if filter_commented and is_commented:
                     continue
 
                 timestamp = msg.get("created_time", "")
@@ -660,7 +704,7 @@ class QzoneAPI:
             logger.info("成功解析 %d 条说说（其中自己 %d 条）", len(feeds_list), num_self)
             # 去除自己的说说，单独通过 get_list 拉完整评论
             feeds_list = [f for f in feeds_list if f.get("target_qq") != self.uin]
-            self_feeds = await self.get_list(self.uin, self_readnum)
+            self_feeds = await self.get_list(self.uin, self_readnum) if self_readnum > 0 else []
             self_feeds = [f for f in self_feeds if not f.get("error")]
             feeds_list.extend(self_feeds)
             return feeds_list
@@ -670,6 +714,8 @@ class QzoneAPI:
 
     async def get_send_history(self, num: int) -> str:
         """构建近期发送历史的 prompt 片段。"""
+        if num <= 0:
+            return ""
         feeds_list = await self.get_list(self.uin, num)
         history = "==================="
         for feed in feeds_list:
@@ -699,6 +745,7 @@ class QzoneAPI:
 def create_qzone_api(
     uin: str,
     *,
+    storage: PluginPersistence,
     image_description_provider: Optional[ImageDescriptionProvider] = None,
 ) -> Optional[QzoneAPI]:
     """从 data/cookies-<uin>.json 加载 cookie 并构造 QzoneAPI。
@@ -706,9 +753,7 @@ def create_qzone_api(
     Returns:
         QzoneAPI 实例；cookie 文件不存在或解析失败返回 None。
     """
-    from .persistence import get_cookie_file_path
-
-    cookie_file = get_cookie_file_path(uin)
+    cookie_file = storage.get_cookie_file_path(uin)
     if not cookie_file.exists():
         logger.error("cookie 文件不存在: %s", cookie_file)
         return None

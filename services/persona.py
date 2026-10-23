@@ -1,6 +1,6 @@
 """统一的人格信息加载器。
 
-发说说 / 读说说评论 / 自动回复 / 日记 / Routine 决策 全部共用。
+发说说 / 读说说评论 / 自动回复 / 日程生成 / Routine 决策共用。
 
 主程序 ``[personality]`` 段 4 个字段：
 
@@ -14,28 +14,26 @@
 
 形象注入与配图：
 
-- 文本路径（说说/评论/日记 prompt）：``self_description`` 非空 → 用 user 填的；
+- 文本路径（说说/评论/日程 prompt）：``self_description`` 非空 → 用 user 填的；
   为空 → 自动从绘卷 ``mais_art_journal/[selfie].prompt_prefix`` 兜底
 - 图像路径（配图）：
   - ``selfie_mode=True`` 让绘卷用 ``[selfie].prompt_prefix`` 处理外观（不被优化器改写）
   - MaiTrace 主动读绘卷 ``[selfie].reference_image_path``，转 base64 后传给绘卷
-    ``input_image_base64`` 走图生图（绘卷 API 不会自动读，必须我们传）
+    ``input_image_base64`` 走图生图；绘卷也支持自行读取其参考图配置
 """
 
 from __future__ import annotations
 
-import logging
-from ..utils import get_logger
-import os
-import random
 from dataclasses import dataclass, field
 from typing import List, Tuple
+import os
+import random
 
 from ..utils import (
     get_global_float,
     get_global_list,
     get_global_str,
-    peel_envelope,
+    get_logger,
 )
 
 logger = get_logger(__name__)
@@ -74,8 +72,7 @@ class Persona:
     """绘卷 [selfie].reference_image_path 解析后的绝对路径。空 = 未配置 / 文件不存在 /
     绘卷未装。配图时由 feed_image 读取转 base64 后传给绘卷 ``input_image_base64`` 走图生图。
 
-    Note: 绘卷 generate_image API 不会自动读 selfie.reference_image_path，必须调用方
-    主动传 input_image_base64 才会走图生图。"""
+    Note: 显式透传时使用本次人格快照读取的参考图；没有透传时绘卷可读取自身配置。"""
 
     def system_prefix(self) -> str:
         """构造可直接插入 prompt 头部的"自我介绍"片段。
@@ -128,7 +125,6 @@ async def _get_art_selfie_info(ctx) -> Tuple[str, str]:
     except Exception as exc:
         logger.debug("读绘卷配置失败（可能未安装）: %s", exc)
         return "", ""
-    cfg = peel_envelope(cfg)
     if not isinstance(cfg, dict):
         return "", ""
     selfie = cfg.get("selfie") or {}
@@ -183,12 +179,9 @@ async def resolve_persona(plugin) -> Persona:
     alias_names = [str(n).strip() for n in alias_names_raw if str(n).strip()]
 
     # MaiTrace 自己的 [persona] 段
-    cfg_persona = getattr(plugin.config, "persona", None)
-    use_multiple = True
-    self_desc_cfg = ""
-    if cfg_persona is not None:
-        use_multiple = bool(getattr(cfg_persona, "use_multiple_reply_style", True))
-        self_desc_cfg = (getattr(cfg_persona, "self_description", "") or "").strip()
+    cfg_persona = plugin.config.persona
+    use_multiple = cfg_persona.use_multiple_reply_style
+    self_desc_cfg = cfg_persona.self_description.strip()
 
     # 风格抽样
     style = default_style

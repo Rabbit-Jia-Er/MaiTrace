@@ -27,6 +27,8 @@ def is_in_silent_period(
     silent_hours_config: str,
     like_during_silent: bool = False,
     comment_during_silent: bool = False,
+    *,
+    now: Optional[datetime.datetime] = None,
 ) -> tuple[bool, bool, bool]:
     """判定当前是否在静默时间段。
 
@@ -34,6 +36,7 @@ def is_in_silent_period(
         silent_hours_config: 例 "22:00-07:00,12:00-14:00"。
         like_during_silent: 静默期是否允许点赞。
         comment_during_silent: 静默期是否允许评论。
+        now: 配置时区中的当前时间，省略时使用本机时间。
 
     Returns:
         (是否静默, 允许点赞, 允许评论)。非静默期 → (False, True, True)。
@@ -42,7 +45,7 @@ def is_in_silent_period(
         return False, True, True
 
     try:
-        now = datetime.datetime.now()
+        now = now if now is not None else datetime.datetime.now()
         current = now.hour * 60 + now.minute
 
         for period in silent_hours_config.split(","):

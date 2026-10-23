@@ -1,31 +1,31 @@
 """MaiTrace Routine 模式 - 日程驱动统一行为管理。
 
-通过跨插件 API 调用 ``xuqian13.autonomous-planning-plugin-v4.get_current_activity``
-取得当前日程活动，由 LLM 决策是否发说说 / 刷空间，到点触发日记生成。
+读取本实例的内部日程快照和公开生活契机，由 LLM 决策是否发说说 / 刷空间，
+只在有具体生活素材时考虑公开分享。
 
 由 plugin.py on_load 创建并启动，on_unload 停止。
 """
 
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 import asyncio
 import collections
 import datetime
-import logging
-from ..utils import get_logger
 import random
 import time
 import traceback
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Dict, List, Optional
 
-from ..utils import peel_envelope
+from ..utils import get_logger, wrap_untrusted
 from ..utils.time_window import is_in_silent_period
+from .activity import ActivityInfo, ActivityType, _classify_activity
 from .feed_publish import send_feed
 from .llm_runner import LLMRunner
+from .limits import publication_budget_seconds
 from .monitor import run_browse_once
 from .persona import resolve_persona
+from .qzone_api import PublicationState
 
 logger = get_logger(__name__)
 
@@ -35,111 +35,30 @@ logger = get_logger(__name__)
 # ============================================================
 
 
-class ActivityType(Enum):
-    SLEEPING = "sleeping"
-    WAKING_UP = "waking_up"
-    EATING = "eating"
-    WORKING = "working"
-    STUDYING = "studying"
-    EXERCISING = "exercising"
-    RELAXING = "relaxing"
-    SOCIALIZING = "socializing"
-    COMMUTING = "commuting"
-    HOBBY = "hobby"
-    SELF_CARE = "self_care"
-    OTHER = "other"
-
-
-@dataclass
-class ActivityInfo:
-    activity_type: ActivityType
-    description: str
-    mood: str = "neutral"
-    time_point: str = ""
-
-
-_TYPE_MAP: dict[str, ActivityType] = {
-    # 英文
-    "work": ActivityType.WORKING,
-    "study": ActivityType.STUDYING,
-    "exercise": ActivityType.EXERCISING,
-    "eat": ActivityType.EATING,
-    "meal": ActivityType.EATING,
-    "rest": ActivityType.RELAXING,
-    "relax": ActivityType.RELAXING,
-    "social": ActivityType.SOCIALIZING,
-    "hobby": ActivityType.HOBBY,
-    "sleep": ActivityType.SLEEPING,
-    "self_care": ActivityType.SELF_CARE,
-    "commut": ActivityType.COMMUTING,
-    # 中文
-    "工作": ActivityType.WORKING, "办公": ActivityType.WORKING, "会议": ActivityType.WORKING,
-    "学习": ActivityType.STUDYING, "阅读": ActivityType.STUDYING, "读书": ActivityType.STUDYING,
-    "审阅": ActivityType.STUDYING, "看书": ActivityType.STUDYING, "研究": ActivityType.STUDYING,
-    "运动": ActivityType.EXERCISING, "锻炼": ActivityType.EXERCISING,
-    "健身": ActivityType.EXERCISING, "散步": ActivityType.EXERCISING,
-    "吃": ActivityType.EATING, "餐": ActivityType.EATING,
-    "料理": ActivityType.EATING, "烹饪": ActivityType.EATING,
-    "休息": ActivityType.RELAXING, "放松": ActivityType.RELAXING,
-    "泡澡": ActivityType.RELAXING, "泡浴": ActivityType.RELAXING,
-    "聊天": ActivityType.SOCIALIZING, "交流": ActivityType.SOCIALIZING, "社交": ActivityType.SOCIALIZING,
-    "睡": ActivityType.SLEEPING, "梦": ActivityType.SLEEPING,
-    "入眠": ActivityType.SLEEPING, "午休": ActivityType.SLEEPING, "小憩": ActivityType.SLEEPING,
-    "梳妆": ActivityType.SELF_CARE, "打扮": ActivityType.SELF_CARE,
-    "化妆": ActivityType.SELF_CARE, "护肤": ActivityType.SELF_CARE,
-    "通勤": ActivityType.COMMUTING, "赶路": ActivityType.COMMUTING, "出行": ActivityType.COMMUTING,
-    "起床": ActivityType.WAKING_UP, "醒": ActivityType.WAKING_UP,
-}
-
-
-def _classify_activity(goal_type: str, description: str) -> ActivityType:
-    combined = (goal_type + " " + description).lower()
-    for key, atype in _TYPE_MAP.items():
-        if key in combined:
-            return atype
-    return ActivityType.OTHER
-
-
 # ============================================================
-# PlanningPluginProvider - 通过 xuqian13.autonomous-planning-plugin-v4 API
+# InternalScheduleProvider - 本实例的内部日程快照
 # ============================================================
 
 
-class PlanningPluginProvider:
-    """通过自主规划插件 v4 的公开 API 取当前活动。
+class InternalScheduleProvider:
+    """读取 MaiTrace 的内部活动快照。
 
-    依赖：xuqian13.autonomous-planning-plugin-v4 已安装并暴露 get_current_activity。
-    返回 None 时调用方按"无活动"处理。
+    只读取当前 MaiTrace 实例的日程快照，不依赖其他插件或读取其他数据库。
     """
-
-    PLUGIN_API = "xuqian13.autonomous-planning-plugin-v4.get_current_activity"
-    _MISSING_THRESHOLD = 5  # 连续 N 次 API 不可达后降级到 debug 日志
 
     def __init__(self, plugin) -> None:
         self.plugin = plugin
-        self._missing_count = 0
         self._last_snapshot: Optional[Dict[str, Any]] = None
 
     async def get_current_activity(self) -> Optional[ActivityInfo]:
-        try:
-            result = await self.plugin.ctx.api.call(self.PLUGIN_API, chat_id="global")
-        except PermissionError as exc:
-            self._missing_count += 1
-            if self._missing_count <= self._MISSING_THRESHOLD:
-                logger.info("规划插件 API 权限不足（可能未安装）: %s", exc)
+        if not self.plugin.config.schedule.enabled or self.plugin.schedule_engine is None:
             return None
-        except Exception as exc:
-            self._missing_count += 1
-            level = logger.warning if self._missing_count <= self._MISSING_THRESHOLD else logger.debug
-            level("规划插件 API 调用失败: %s", exc)
-            return None
-
-        result = peel_envelope(result)
+        result = self.plugin.schedule_engine.current_activity_payload()
         if not isinstance(result, dict):
-            return None
-
+            raise TypeError("内部日程快照必须是字典")
         self._last_snapshot = result
-        self._missing_count = 0
+        if result.get("error"):
+            raise RuntimeError(f"内部日程查询失败: {result['error']}")
 
         if not result.get("has_activity"):
             return None
@@ -159,7 +78,7 @@ class PlanningPluginProvider:
         )
 
     def get_last_snapshot(self) -> Optional[Dict[str, Any]]:
-        """供调试命令展示 API 最近一次原始返回。"""
+        """供调试命令展示最近读取的内部快照。"""
         return dict(self._last_snapshot) if self._last_snapshot else None
 
 
@@ -173,12 +92,11 @@ class RoutineRunner:
 
     def __init__(self, plugin) -> None:
         self.plugin = plugin
-        self.schedule_provider: Optional[PlanningPluginProvider] = None
+        self.schedule_provider: Optional[InternalScheduleProvider] = None
         self.is_running = False
         self.task: Optional[asyncio.Task] = None
         self.last_post_time: float = 0
         self.last_browse_time: float = 0
-        self.last_diary_date: Optional[datetime.date] = None
         self._last_check_ts: float = 0.0
         # /zn debug routine 用：最近 N 次 LLM 决策与执行结果
         self._decision_history: collections.deque[dict] = collections.deque(maxlen=20)
@@ -188,29 +106,45 @@ class RoutineRunner:
         return list(self._decision_history)
 
     def get_planning_snapshot(self) -> Optional[Dict[str, Any]]:
-        """返回规划插件最近一次返回的活动快照。"""
+        """返回本实例最近读取的内部日程快照。"""
         if self.schedule_provider is None:
             return None
         return self.schedule_provider.get_last_snapshot()
 
+    def export_state(self) -> Dict[str, Any]:
+        """热更新延续冷却与决策历史，防止重新装配重复触发。"""
+        return {
+            "last_post_time": self.last_post_time, "last_browse_time": self.last_browse_time,
+            "last_check_ts": self._last_check_ts,
+            "decision_history": list(self._decision_history),
+        }
+
+    def restore_state(self, state: Dict[str, Any]) -> None:
+        if not state:
+            return
+        self.last_post_time = state["last_post_time"]
+        self.last_browse_time = state["last_browse_time"]
+        self._last_check_ts = state["last_check_ts"]
+        self._decision_history.extend(state["decision_history"])
+
     async def start(self) -> None:
         if self.is_running:
             return
-        self.schedule_provider = PlanningPluginProvider(self.plugin)
+        self.schedule_provider = InternalScheduleProvider(self.plugin)
         self.is_running = True
         self.task = asyncio.create_task(self._loop())
-        logger.info("Routine 模式已启动（通过 %s）", PlanningPluginProvider.PLUGIN_API)
+        logger.info("Routine 已启动（使用 MaiTrace 内部日程与生活契机）")
 
     async def stop(self) -> None:
-        if not self.is_running:
-            return
         self.is_running = False
-        if self.task:
-            self.task.cancel()
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
+        tasks = [self.task] if self.task is not None else []
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.task = None
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Routine 后台任务退出异常: %s", result, exc_info=result)
         logger.info("Routine 模式已停止")
 
     # ---------- 主循环 ----------
@@ -220,9 +154,6 @@ class RoutineRunner:
         while self.is_running:
             try:
                 activity = await self.schedule_provider.get_current_activity() if self.schedule_provider else None
-
-                # 日记检查：无论是否有活动都要尝试（基于时间窗）
-                await self._check_diary()
 
                 if not activity:
                     logger.debug("routine: 无当前活动")
@@ -239,16 +170,11 @@ class RoutineRunner:
                     continue
 
                 # 发说说
-                if await self._llm_decide(activity, "post"):
-                    try:
-                        await self._post_feed(activity)
-                    except Exception as exc:
-                        logger.error("routine: 发说说失败: %s", exc)
-                        traceback.print_exc()
-                        self._mark_last_executed("post", False, str(exc))
+                if self.plugin.config.routine.post_enabled:
+                    await self._try_post_feed(activity)
 
                 # 刷空间
-                if await self._llm_decide(activity, "browse"):
+                if self.plugin.config.routine.browse_enabled and await self._llm_decide(activity, "browse"):
                     try:
                         await self._browse_feeds()
                     except Exception as exc:
@@ -316,6 +242,7 @@ class RoutineRunner:
                 cfg_monitor.silent_hours,
                 like_during_silent=False,
                 comment_during_silent=False,
+                now=datetime.datetime.now(ZoneInfo(self.plugin.config.schedule.timezone)),
             )
             if is_silent:
                 return f"静默时段({cfg_monitor.silent_hours})"
@@ -328,7 +255,9 @@ class RoutineRunner:
 
         return None
 
-    async def _llm_decide(self, activity: ActivityInfo, action: str) -> bool:
+    async def _llm_decide(
+        self, activity: ActivityInfo, action: str, *, opportunity: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         cfg = self.plugin.config.routine
 
         # 0. 冷却硬限制
@@ -364,7 +293,7 @@ class RoutineRunner:
 
         # 2. LLM 决策
         persona = await resolve_persona(self.plugin)
-        current_time = datetime.datetime.now().strftime("%H:%M")
+        current_time = datetime.datetime.now(ZoneInfo(self.plugin.config.schedule.timezone)).strftime("%H:%M")
         action_desc = "发一条 QQ 空间说说" if action == "post" else "刷一下 QQ 空间看看好友动态"
         require_reason = cfg.require_reason
 
@@ -376,13 +305,12 @@ class RoutineRunner:
                 "  否|<不超过20字的简短理由>\n"
                 "第一个字符必须是'是'或'否'。"
             )
-            max_tokens = 60
         else:
             format_hint = "只回答'是'或'否'，不要输出其他内容。第一个字符必须是'是'或'否'。"
-            max_tokens = 6
 
         prompt = (
-            f"你是'{persona.personality}'。当前时间 {current_time}，你正在 {activity.description}。\n\n"
+            f"你是'{persona.personality}'。当前时间 {current_time}。\n"
+            f"{wrap_untrusted(activity.description, label='当前活动')}\n"
             f"请判断你现在是否会自然地{action_desc}。\n\n"
             "【绝对不会的情况】\n"
             "- 正在专注做事（工作 / 学习 / 会议 / 写代码 / 审阅）\n"
@@ -398,13 +326,18 @@ class RoutineRunner:
             "绝大多数情况下应该回答'否'——能回答'否'就回答'否'。\n\n"
             f"{format_hint}"
         )
+        if opportunity is not None:
+            prompt += wrap_untrusted(
+                f"主题：{opportunity['topic']}\n动机：{opportunity.get('motive', '')}",
+                label="本轮可公开分享的生活素材", max_chars=2000,
+            )
 
         runner = LLMRunner(
             self.plugin.ctx,
             self.plugin.config.llm.text_model,
             timeout=self.plugin.config.llm.llm_timeout_seconds,
         )
-        success, answer = await runner.generate(prompt, temperature=0.2, max_tokens=max_tokens)
+        success, answer = await runner.generate(prompt, temperature=0.2, max_tokens=8192)
         if not success:
             self._record_decision(
                 action=action, activity=activity,
@@ -470,12 +403,77 @@ class RoutineRunner:
 
     # ---------- 发说说 ----------
 
-    async def _post_feed(self, activity: ActivityInfo) -> None:
+    async def _try_post_feed(self, activity: ActivityInfo) -> None:
+        """同一调度入口消费公开契机；明确失败释放，发布结果不明则隔离。"""
+        claim = None
+        life = self.plugin.life_engine
+        if life is None:
+            return
+        # 冷却和作息先筛选；无具体公开素材时不调用决策模型，也不空编近况。
+        if time.time() - self.last_post_time < self.plugin.config.routine.post_cooldown_minutes * 60:
+            self._record_decision(
+                action="post", activity=activity, llm_answer="", reason="冷却中",
+                decision=False, cooldown_skipped=True,
+            )
+            return
+        block_reason = self._hard_rules_block(activity, "post")
+        if block_reason:
+            self._record_decision(
+                action="post", activity=activity, llm_answer="", reason=block_reason,
+                decision=False, cooldown_skipped=False, hard_blocked=True,
+            )
+            return
+        completed = False
+        confirmed = False
+        publication = PublicationState()
+        failure = "本轮未通过发布判断"
+        try:
+            if life is not None:
+                lease = max(self.plugin.config.life.claim_lease_seconds, publication_budget_seconds(self.plugin.config) + 120)
+                claim = await life.claim_public_opportunity(consumer="qzone", lease_seconds=lease)
+            if claim is None:
+                return
+            if not await self._llm_decide(activity, "post", opportunity=claim):
+                return
+            completed, failure = await self._post_feed(activity, opportunity=claim, publication=publication)
+            if completed and claim is not None:
+                confirmed = await life.confirm(claim["claim_token"], receipt=publication.tid or "qzone_published")
+                if not confirmed:
+                    logger.error("空间已发布，但素材确认未成功: %s", claim["id"])
+        except asyncio.CancelledError:
+            failure = "发布任务取消"
+            raise
+        except Exception as exc:
+            failure = str(exc)
+            logger.exception("routine: 发说说失败")
+            self._mark_last_executed("post", False, failure)
+        finally:
+            if publication.uncertain:
+                # 结果待核对的发布也要避免紧接着重复触发；生图失败不会进入此分支。
+                self.last_post_time = time.time()
+            if claim is not None:
+                if completed and not confirmed:
+                    await life.quarantine(claim["claim_token"], error="空间已发布，但素材确认未成功")
+                elif publication.uncertain:
+                    await life.quarantine(claim["claim_token"], error=failure)
+                    logger.error("素材发布结果待核对，已停止自动重发: %s", claim["id"])
+                elif not completed:
+                    await life.release(claim["claim_token"], error=failure)
+
+    async def _post_feed(
+        self, activity: ActivityInfo, *, opportunity: Optional[Dict[str, Any]] = None,
+        publication: Optional[PublicationState] = None,
+    ) -> Tuple[bool, str]:
         logger.info("routine: 准备发说说，活动: %s", activity.description)
         success, story = await send_feed(
             self.plugin,
-            activity.description,
+            str(opportunity["topic"]) if opportunity is not None else activity.description,
             current_activity=activity.description,
+            activity_type=activity.activity_type.value,
+            publication=publication,
+            material_instruction=str(opportunity.get("instruction", "")) if opportunity is not None else "",
+            # 生活素材只是主题，不能因恰好等于 custom 而执行私聊直发命令。
+            interpret_custom=False,
         )
         if success:
             self.last_post_time = time.time()
@@ -484,6 +482,7 @@ class RoutineRunner:
         else:
             logger.error("routine: 发说说失败: %s", story)
             self._mark_last_executed("post", False, story)
+        return success, story
 
     # ---------- 刷空间 ----------
 
@@ -497,60 +496,3 @@ class RoutineRunner:
         else:
             logger.warning("routine: 刷空间结果: %s", msg)
             self._mark_last_executed("browse", False, msg)
-
-    # ---------- 日记 ----------
-
-    async def _check_diary(self) -> None:
-        """到点触发日记生成。
-
-        用"上次检查时间戳 → 现在"这个窗口跨越 schedule_time 判定，避免 20 分钟轮询永远错过的问题。
-        当天已生成过则跳过；首次启动若已过 schedule_time，也会触发一次。
-        """
-        cfg = self.plugin.config.diary
-        if not cfg.enabled:
-            return
-
-        schedule_str = (cfg.schedule_time or "").strip()
-        if ":" not in schedule_str:
-            return
-        try:
-            hh_s, mm_s = schedule_str.split(":", 1)
-            hh, mm = int(hh_s.strip()), int(mm_s.strip())
-        except ValueError:
-            logger.warning("diary.schedule_time 格式错误: %s", schedule_str)
-            return
-        if not (0 <= hh <= 23 and 0 <= mm <= 59):
-            return
-
-        now = datetime.datetime.now()
-        today = now.date()
-        if self.last_diary_date == today:
-            return
-
-        target = datetime.datetime.combine(today, datetime.time(hh, mm))
-        target_ts = target.timestamp()
-        now_ts = now.timestamp()
-
-        if self._last_check_ts > 0:
-            # 后续循环：上次检查 → 现在的窗口跨过了 target
-            crossed = self._last_check_ts <= target_ts < now_ts
-        else:
-            # 首次循环：只要当前已过 target（同一天内），也触发一次
-            crossed = now >= target
-
-        if not crossed:
-            return
-
-        self.last_diary_date = today
-        logger.info("routine: 到达日记生成时间 target=%s now=%s",
-                    target.strftime("%H:%M"), now.strftime("%H:%M:%S"))
-        asyncio.create_task(self._generate_diary())
-
-    async def _generate_diary(self) -> None:
-        try:
-            from .diary.pipeline import DiaryPipeline
-            pipeline = DiaryPipeline(self.plugin)
-            await pipeline.generate_and_publish_for_today()
-        except Exception as exc:
-            logger.error("routine: 日记生成失败: %s", exc)
-            traceback.print_exc()

@@ -1,5 +1,7 @@
+maibot-plugin-sdk>=2.15.0,<3
 httpx>=0.24.0
-Pillow>=9.0.0
-bs4>=0.0.1
+beautifulsoup4>=4.12.0
 json5>=0.9.0
-openai>=1.0.0
+tzdata>=2024.1
+chinese-calendar>=1.11.0
+lunar-python>=1.4.0

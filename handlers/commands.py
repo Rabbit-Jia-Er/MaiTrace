@@ -1,35 +1,39 @@
 """/zn 命令子分发。
 
 由 plugin.py 的 @Command("zn") 调用 dispatch_zn(self, **kwargs)。
-日记相关子命令延迟 import services/diary，Step 5 完成后即可用。
+保留旧聊天日记的只读入口，新日记由生活层生成。
 """
 
 from __future__ import annotations
 
+from typing import Any, List
 import datetime
-import logging
-from ..utils import get_logger
-from typing import Any
 
 from ..services.feed_publish import send_feed
 from ..services.permission import is_admin
+from ..utils import get_logger
 from ..utils.date import parse_date, today_str
 
 logger = get_logger(__name__)
 
 
-_KEYWORDS = {"gen", "generate", "ls", "list", "v", "view", "custom", "help", "debug"}
-
 _HELP_TEXT = (
     "/zn <主题>          - 发一条指定主题的说说\n"
     "/zn custom          - 用 custom QQ 的私聊内容发说说\n"
-    "/zn gen [日期]      - 生成日记（默认今天）\n"
-    "/zn ls              - 日记列表\n"
-    "/zn v [日期] [编号] - 查看日记\n"
-    "/zn <日期>          - 等价 /zn v <日期>\n"
-    "/zn debug [项]      - 调试信息 (routine/msgs/cookie/help)\n"
+    "/zn plan [子命令]   - 每日作息与临时约定\n"
+    "/zn status          - 当前生活状态\n"
+    "/zn life diary      - 查看私人生活日记（主人私聊）\n"
+    "/zn dates [操作]    - 本人重要日期与待确认日期\n"
+    "/zn config          - 生活功能开关摘要\n"
+    "/zn ls / v [日期]   - 阅读旧版聊天日记\n"
+    "/zn debug [项]      - 调试信息 (routine/cookie/help)\n"
     "日期支持: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD / 今天 / 昨天 / 前天"
 )
+
+_RETIRED_COMMANDS = {
+    "gen", "generate", "relation", "news", "explore", "bookshelf", "read", "create",
+    "stats", "menu", "admin", "recalled", "relay",
+}
 
 
 async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
@@ -42,7 +46,7 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
     user_id = str(kwargs.get("user_id", "") or "")
     group_id = str(kwargs.get("group_id", "") or "")
 
-    # ===== 全局管理员检查（覆盖所有子命令：help / 主题 / custom / gen / ls / v / debug / <日期>） =====
+    # ===== 全局管理员检查（覆盖所有子命令：help / 主题 / custom / plan / life / ls / v / debug / <日期>） =====
     if not is_admin(plugin.config, user_id):
         admin_list = list(plugin.config.plugin.admin_qq or [])
         msg = "⚠️ 未配置管理员" if not admin_list else "⚠️ 仅管理员可用"
@@ -57,10 +61,23 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
     cmd = parts[0].lower()
     param = parts[1].strip() if len(parts) > 1 else ""
 
-    # ---- 日记子命令 ----
-    if cmd in ("gen", "generate"):
-        return await _cmd_diary_gen(plugin, param, stream_id, group_id)
+    # 日程和生活命令共用上方的 MaiTrace 管理员校验。
+    if cmd == "plan":
+        if plugin.schedule_engine is None or not plugin.config.schedule.enabled:
+            await plugin.ctx.send.text("内部日程未启用", stream_id)
+            return False, "内部日程未启用", True
+        return await plugin.schedule_engine.handle_command(
+            param or "status", stream_id=stream_id, user_id=user_id,
+            group_id=group_id, platform=str(kwargs.get("platform") or "qq"),
+        )
+    if cmd in {"status", "life", "dates", "config"}:
+        return await _cmd_life(plugin, raw, stream_id, user_id)
+    if cmd in _RETIRED_COMMANDS:
+        message = "此功能已从 MaiTrace 移除。生活日记用 /zn life diary，旧聊天日记仍可用 /zn ls 和 /zn v 阅读；完整帮助见 /zn help。"
+        await plugin.ctx.send.text(message, stream_id)
+        return False, message, True
 
+    # 旧聊天日记仅保留阅读；不会抓取聊天或发布新日记。
     if cmd in ("ls", "list"):
         return await _cmd_diary_list(plugin, stream_id)
 
@@ -90,6 +107,20 @@ async def _send_help(plugin, stream_id: str) -> tuple:
     return True, "ok", True
 
 
+async def _cmd_life(plugin: Any, content: str, stream_id: str, user_id: str) -> tuple:
+    if plugin.life_engine is None:
+        await plugin.ctx.send.text("生活服务未启用", stream_id)
+        return False, "生活服务未启用", True
+    try:
+        result = await plugin.life_engine.handle_command(content, stream_id=stream_id, user_id=user_id)
+        await plugin.ctx.send.text(result["text"], stream_id)
+        return bool(result["success"]), result["text"], True
+    except Exception as exc:
+        logger.exception("生活命令执行失败")
+        await plugin.ctx.send.text(f"生活命令执行失败: {exc}", stream_id)
+        return False, str(exc), True
+
+
 # ----- 发说说 -----
 
 
@@ -111,62 +142,14 @@ async def _cmd_send_custom(plugin, stream_id: str) -> tuple:
     return True, "ok", True
 
 
-# ----- 日记（延迟 import services/diary） -----
-
-
-def _try_import_diary():
-    """延迟 import diary 子包，Step 5 完成前返回 None。"""
-    try:
-        from ..services import diary  # noqa: F401
-        from ..services.diary import pipeline as diary_pipeline  # noqa: F401
-        from ..services.diary.storage import DiaryStorage
-        return diary_pipeline, DiaryStorage
-    except ImportError as exc:
-        logger.warning("日记模块尚未就绪: %s", exc)
-        return None
-
-
-async def _cmd_diary_gen(plugin, param: str, stream_id: str, group_id: str) -> tuple:
-    mods = _try_import_diary()
-    if mods is None:
-        await plugin.ctx.send.text("日记功能未就绪（Step 5 待完成）", stream_id)
-        return False, "diary not ready", True
-    diary_pipeline, DiaryStorage = mods
-
-    date = parse_date(param) if param else today_str()
-    if not date:
-        await plugin.ctx.send.text(f"日期格式错误: {param}", stream_id)
-        return False, "bad date", True
-
-    await plugin.ctx.send.text(f"正在生成 {date} 的日记...", stream_id)
-    pipeline = diary_pipeline.DiaryPipeline(plugin)
-    success, result = await pipeline.generate_for_date(date, group_id=group_id, ignore_filter=True)
-    if not success:
-        await plugin.ctx.send.text(f"生成失败: {result}", stream_id)
-        return False, result, True
-
-    publish_msg = ""
-    try:
-        ok = await pipeline.publish_to_qzone(date, result)
-        publish_msg = " (已发布到空间)" if ok else " (空间发布失败)"
-    except Exception as exc:
-        publish_msg = f" (空间发布异常: {exc})"
-
-    await plugin.ctx.send.text(f"{date} 日记已生成{publish_msg}:\n\n{result}", stream_id)
-    return True, "ok", True
+# ----- 旧聊天日记只读访问（延迟 import services/diary） -----
 
 
 async def _cmd_diary_list(plugin, stream_id: str) -> tuple:
-    mods = _try_import_diary()
-    if mods is None:
-        await plugin.ctx.send.text("日记功能未就绪（Step 5 待完成）", stream_id)
-        return False, "diary not ready", True
-    _, DiaryStorage = mods
-    storage = DiaryStorage()
-    stats = await storage.get_stats()
+    from ..services.diary.storage import DiaryStorage
+    storage = DiaryStorage(plugin.persistence.data_dir)
     diaries = await storage.list_diaries(limit=10)
-
-    lines = [f"共{stats['total_count']}篇 | 均{stats['avg_words']}字 | 最新{stats['latest_date']}", ""]
+    lines = ["最近的旧版聊天日记", ""]
     if diaries:
         for i, d in enumerate(diaries, 1):
             pub = "已发" if d.get("is_published_qzone") else "未发"
@@ -178,12 +161,8 @@ async def _cmd_diary_list(plugin, stream_id: str) -> tuple:
 
 
 async def _cmd_diary_view(plugin, param: str, stream_id: str) -> tuple:
-    mods = _try_import_diary()
-    if mods is None:
-        await plugin.ctx.send.text("日记功能未就绪（Step 5 待完成）", stream_id)
-        return False, "diary not ready", True
-    _, DiaryStorage = mods
-    storage = DiaryStorage()
+    from ..services.diary.storage import DiaryStorage
+    storage = DiaryStorage(plugin.persistence.data_dir)
 
     params = param.split() if param else []
     if params:
@@ -228,7 +207,6 @@ async def _cmd_diary_view(plugin, param: str, stream_id: str) -> tuple:
 
 _DEBUG_HELP_TEXT = (
     "/zn debug routine        - 最近 Routine LLM 决策\n"
-    "/zn debug msgs [日期]    - 当日消息读取统计\n"
     "/zn debug cookie         - Cookie 当前状态\n"
     "/zn debug help           - 本帮助"
 )
@@ -237,15 +215,12 @@ _DEBUG_HELP_TEXT = (
 async def _cmd_debug(plugin, param: str, stream_id: str) -> tuple:
     parts = param.split(None, 1) if param else []
     sub = parts[0].lower() if parts else "help"
-    sub_param = parts[1].strip() if len(parts) > 1 else ""
 
     if sub == "help":
         await plugin.ctx.send.text(_DEBUG_HELP_TEXT, stream_id)
         return True, "ok", True
     if sub == "routine":
         return await _debug_routine(plugin, stream_id)
-    if sub == "msgs":
-        return await _debug_msgs(plugin, sub_param, stream_id)
     if sub == "cookie":
         return await _debug_cookie(plugin, stream_id)
 
@@ -260,22 +235,24 @@ def _fmt_ts(ts: float) -> str:
 
 
 async def _debug_routine(plugin, stream_id: str) -> tuple:
-    routine = getattr(plugin, "_routine", None)
+    routine = plugin._routine
     if routine is None:
         await plugin.ctx.send.text("Routine 未启动（plugin.enabled=false？）", stream_id)
         return True, "no routine", True
     history = routine.get_decision_history()
 
-    lines: list[str] = []
-    snapshot = routine.get_planning_snapshot() if hasattr(routine, "get_planning_snapshot") else None
+    lines: List[str] = []
+    snapshot = routine.get_planning_snapshot()
     if snapshot is None:
-        lines.append("规划插件 API：尚未收到任何响应（autonomous-planning-plugin-v4 未安装？）")
+        lines.append("内部日程：尚未读取活动快照")
     elif not snapshot.get("has_activity"):
-        lines.append(f"规划插件 API：has_activity=False ({snapshot.get('as_of', '')})")
+        lines.append(f"内部日程：当前无活动 ({snapshot.get('as_of', '')})")
+        if snapshot.get("error"):
+            lines.append(f"日程状态：{snapshot['error']}")
     else:
         act = snapshot.get("activity") or {}
         lines.append(
-            f"规划插件 API：[{act.get('goal_type', '')}] {act.get('name', '')} "
+            f"内部日程：[{act.get('goal_type', '')}] {act.get('name', '')} "
             f"({act.get('time_window') or '-'})"
         )
 
@@ -318,69 +295,22 @@ async def _debug_routine(plugin, stream_id: str) -> tuple:
     return True, "ok", True
 
 
-async def _debug_msgs(plugin, param: str, stream_id: str) -> tuple:
-    date = parse_date(param) if param else today_str()
-    if not date:
-        await plugin.ctx.send.text(f"日期格式错误: {param}", stream_id)
-        return False, "bad date", True
-
-    try:
-        from ..services.diary.fetcher import MessageFetcher
-    except Exception as exc:
-        await plugin.ctx.send.text(f"加载 fetcher 失败: {exc}", stream_id)
-        return False, "import fail", True
-
-    date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
-    start = date_obj.timestamp()
-    now = datetime.datetime.now()
-    end = now.timestamp() if now.strftime("%Y-%m-%d") == date else (
-        date_obj + datetime.timedelta(days=1)
-    ).timestamp()
-
-    fetcher = MessageFetcher(plugin.ctx)
-    messages = await fetcher.fetch_all(start, end)
-
-    bot_qq = await _get_bot_qq(plugin)
-    bot_msgs = user_msgs = 0
-    by_chat: dict[str, int] = {}
-    for msg in messages:
-        info = (msg.get("message_info") or {}).get("user_info") or {}
-        uid = str(info.get("user_id", "") or "")
-        if bot_qq and uid == bot_qq:
-            bot_msgs += 1
-        else:
-            user_msgs += 1
-        sid = str(msg.get("session_id", "") or "")
-        if sid:
-            by_chat[sid] = by_chat.get(sid, 0) + 1
-
-    lines = [
-        f"📅 {date} 消息读取调试 (bot_qq={bot_qq or '未配置'})",
-        f"  总消息: {len(messages)}    用户: {user_msgs}    bot: {bot_msgs}",
-        f"  活跃聊天: {len(by_chat)} 个",
-    ]
-    if by_chat:
-        top = sorted(by_chat.items(), key=lambda kv: kv[1], reverse=True)[:10]
-        lines.append("  Top 10 聊天:")
-        for sid, n in top:
-            lines.append(f"    {sid[:32]}...  {n} 条")
-    await plugin.ctx.send.text("\n".join(lines), stream_id)
-    return True, "ok", True
-
-
 async def _debug_cookie(plugin, stream_id: str) -> tuple:
     try:
         from ..services.cookie import get_cookie_state
-        from ..services.persistence import load_cookie_stats
     except Exception as exc:
         await plugin.ctx.send.text(f"加载 cookie 模块失败: {exc}", stream_id)
         return False, "import fail", True
 
-    state = get_cookie_state()
-    stats = await load_cookie_stats()
+    state = get_cookie_state(plugin.persistence)
+    stats = await plugin.persistence.load_cookie_stats()
 
     lines = ["🍪 Cookie 状态："]
     lines.append(f"  上次方法: {state.get('last_method') or '-'}")
+    # v4.0：adapter 方式同时支持 napcat / snowluma，显示实际命中的那个
+    adapter_id = state.get("adapter_id") or ""
+    if adapter_id:
+        lines.append(f"  适配器: {adapter_id}")
     lines.append(f"  上次保存: {_fmt_ts(state.get('last_save_time', 0))}")
     lines.append(f"  绑定 uin: {state.get('uin') or '-'}")
     last_err = state.get("last_error") or ""
@@ -405,12 +335,5 @@ async def _debug_cookie(plugin, stream_id: str) -> tuple:
 
 
 async def _get_bot_qq(plugin) -> str:
-    try:
-        value = await plugin.ctx.config.get("bot.qq_account", "")
-    except Exception:
-        return ""
-    from ..utils import peel_envelope
-    value = peel_envelope(value)
-    if isinstance(value, dict):
-        value = value.get("value", "")
-    return str(value or "")
+    from ..services.adapter import resolve_bot_uin
+    return await resolve_bot_uin(plugin.ctx, list(plugin.config.plugin.adapter_priority))

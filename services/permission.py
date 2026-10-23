@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-from ..utils import get_logger
 from typing import Literal
+
+from ..utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -26,12 +26,15 @@ def check_permission(config, qq_account: str, section: Section) -> bool:
     """
     if not qq_account:
         return False
-    sec = getattr(config, section, None)
-    if sec is None:
+    if section == "send":
+        sec = config.send
+    elif section == "read":
+        sec = config.read
+    else:
         logger.error("无效的 section: %s", section)
         return False
 
-    perm_list = [str(q) for q in (sec.permission or [])]
+    perm_list = [str(q) for q in sec.permission]
     qq = str(qq_account)
     if sec.permission_type == "whitelist":
         return qq in perm_list
@@ -56,5 +59,5 @@ def is_admin(config, qq_account: str) -> bool:
     """
     if not qq_account:
         return False
-    admin_list = [str(q).strip() for q in (config.plugin.admin_qq or []) if str(q).strip()]
+    admin_list = [str(q).strip() for q in config.plugin.admin_qq if str(q).strip()]
     return str(qq_account) in admin_list

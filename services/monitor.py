@@ -5,26 +5,20 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-from ..utils import get_logger
-import random
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+import asyncio
+import random
 
-from ..utils import get_global_str, peel_envelope
+from ..utils import get_logger
 from ..utils.time_window import is_in_silent_period
-from .cookie import renew_cookies
-from .feed_read import make_qzone_api
+from .feed_read import is_skip_comment, make_qzone_api
 from .llm_runner import LLMRunner
 from .persona import Persona, resolve_persona
-from .persistence import (
-    load_processed_comments,
-    load_processed_list,
-    save_processed_comments,
-    save_processed_list,
-)
 from .prompts import build_comment_prompt, build_reply_prompt, build_reply_to_reply_prompt
 from .qzone_api import QzoneAPI
+from .qzone_activity import record_activity
 
 logger = get_logger(__name__)
 
@@ -40,11 +34,9 @@ async def _get_impression(plugin, user_id: str) -> str:
     except Exception as exc:
         logger.debug("db.get PersonInfo 异常: %s", exc)
         return "无印象"
-    result = peel_envelope(result)
-    rows = result if isinstance(result, list) else (result.get("rows") if isinstance(result, dict) else [])
-    if not rows:
+    if not isinstance(result, list) or not result:
         return "无印象"
-    return str(rows[0].get("memory_points") or "无印象")
+    return str(result[0].get("memory_points") or "无印象")
 
 
 def _passes_read_list(target_qq: str, read_list: list[str], list_type: str) -> bool:
@@ -76,35 +68,23 @@ class FeedMonitor:
             cfg_monitor.silent_hours,
             cfg_monitor.like_during_silent,
             cfg_monitor.comment_during_silent,
+            now=datetime.now(ZoneInfo(self.plugin.config.schedule.timezone)),
         )
         if is_silent and not allow_like and not allow_comment:
             logger.info("静默时段且不允许点赞/评论，跳过本轮刷空间")
             return True, "静默期跳过"
 
-        # cookie
-        qq_account = await get_global_str(self.plugin.ctx, "bot.qq_account", "")
-        if not qq_account:
-            return False, "未读到 bot.qq_account"
-
-        ok = await renew_cookies(
-            self.plugin.ctx,
-            host=self.plugin.config.plugin.http_host,
-            port=self.plugin.config.plugin.http_port,
-            napcat_token=self.plugin.config.plugin.napcat_token,
-            uin=qq_account,
-            methods=list(self.plugin.config.plugin.cookie_methods),
-        )
-        if not ok:
-            return False, "更新 cookies 失败"
-
-        # QzoneAPI
+        # Cookie 与 QzoneAPI 使用同一次解析的实际登录账号，避免重复刷新和账号漂移。
         qzone = await make_qzone_api(self.plugin)
         if qzone is None:
-            return False, "创建 QzoneAPI 失败"
+            return False, "连接 QQ 空间失败，请检查登录账号及 Cookie"
+        qq_account = qzone.uin
 
         # 拉说说列表
         try:
-            feeds_list = await qzone.monitor_get_list(cfg_monitor.self_read_number)
+            feeds_list = await qzone.monitor_get_list(
+                cfg_monitor.self_read_number if cfg_monitor.enable_auto_reply else 0,
+            )
         except Exception as exc:
             logger.error("monitor_get_list 异常: %s", exc, exc_info=True)
             return False, f"获取说说列表失败: {exc}"
@@ -145,7 +125,7 @@ class FeedMonitor:
 
             # 自己的说说 → 回复评论
             if target_qq == qq_account:
-                if not cfg_monitor.enable_auto_reply:
+                if not cfg_monitor.enable_auto_reply or not allow_comment:
                     continue
                 await self._reply_self_feed_comments(
                     qzone, fid, target_qq, content, comments_list, qq_account,
@@ -179,7 +159,7 @@ class FeedMonitor:
             while len(processed_list) > cfg_monitor.processed_feeds_cache_size:
                 oldest = next(iter(processed_list))
                 processed_list.pop(oldest)
-            await save_processed_list(processed_list)
+            await self.plugin.persistence.save_processed_list(processed_list)
 
         return True, "ok"
 
@@ -213,10 +193,16 @@ class FeedMonitor:
             if show_prompt:
                 logger.info("评论 prompt: %s", prompt)
             success, comment_text = await runner.generate(prompt, temperature=0.3)
-            if success and comment_text:
+            if success and self.plugin.config.read.allow_skip_comment and is_skip_comment(comment_text):
+                # 跳过评论不能提前返回；继续点赞，由 check_feeds 记录去重状态。
+                logger.info("模型选择不评论说说 %s: %r", fid, comment_text)
+                await record_activity(self.plugin, "skip_comment", target_qq=target_qq, fid=fid, feed=content)
+            elif success and comment_text:
                 ok = await qzone.comment(fid, target_qq, comment_text)
                 if ok:
                     logger.info("成功评论 %s: %s", target_qq, comment_text)
+                    await record_activity(self.plugin, "comment", target_qq=target_qq,
+                                          fid=fid, feed=content, text=comment_text)
                 else:
                     logger.warning("评论失败 %s", target_qq)
             else:
@@ -298,11 +284,14 @@ class FeedMonitor:
                 logger.warning("回复评论失败: %s", comment.get("content"))
                 continue
             logger.info("回复评论成功: %s", reply_text)
+            await record_activity(self.plugin, "reply", fid=fid, feed=content,
+                                  target_qq=comment.get("qq_account"), target_name=comment.get("nickname"),
+                                  comment_tid=comment["comment_tid"], comment=comment.get("content"), text=reply_text)
             processed_comments.setdefault(fid, []).append(comment["comment_tid"])
             while len(processed_comments) > cfg_monitor.processed_comments_cache_size:
                 oldest = next(iter(processed_comments))
                 processed_comments.pop(oldest)
-            await save_processed_comments(processed_comments)
+            await self.plugin.persistence.save_processed_comments(processed_comments)
             await asyncio.sleep(5 + random.random() * 5)
 
     # ===== 子流程：回复他人空间中对 bot 评论的回复（多层链式） =====
@@ -375,22 +364,25 @@ class FeedMonitor:
                 logger.warning("回复（链式）失败: %s", reply_c.get("content"))
                 continue
             logger.info("回复（链式）成功: %s", reply_text)
+            await record_activity(self.plugin, "reply", fid=fid, feed=content,
+                                  target_qq=reply_c.get("qq_account"), target_name=reply_c.get("nickname"),
+                                  comment_tid=reply_c["comment_tid"], comment=reply_c.get("content"), text=reply_text)
             processed_comments.setdefault(fid, []).append(reply_c["comment_tid"])
             while len(processed_comments) > cfg_monitor.processed_comments_cache_size:
                 oldest = next(iter(processed_comments))
                 processed_comments.pop(oldest)
-            await save_processed_comments(processed_comments)
+            await self.plugin.persistence.save_processed_comments(processed_comments)
             await asyncio.sleep(5 + random.random() * 5)
 
 
 async def run_browse_once(plugin) -> tuple[bool, str]:
     """便捷入口：加载 processed_* → check_feeds → 保存。RoutineRunner 调用此。"""
-    processed_list = await load_processed_list()
-    processed_comments = await load_processed_comments()
+    processed_list = await plugin.persistence.load_processed_list()
+    processed_comments = await plugin.persistence.load_processed_comments()
     monitor = FeedMonitor(plugin)
     try:
         success, msg = await monitor.check_feeds(processed_list, processed_comments)
     finally:
-        await save_processed_list(processed_list)
-        await save_processed_comments(processed_comments)
+        await plugin.persistence.save_processed_list(processed_list)
+        await plugin.persistence.save_processed_comments(processed_comments)
     return success, msg
