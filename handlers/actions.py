@@ -124,16 +124,15 @@ async def execute_send_feed(plugin, **kwargs: Any) -> Dict[str, Any]:
     @Tool 由 host 把 LLM function_args 平铺进 kwargs，
     同时附带 stream_id / chat_id / user_id / group_id / platform 上下文。
     """
-    user_name = (kwargs.get("user_name") or "").strip()
     topic = (kwargs.get("topic") or "").strip()
     stream_id = kwargs.get("stream_id") or kwargs.get("chat_id") or ""
 
-    # 权限只使用 Host 提供的调用者身份；模型给出的名字只用于展示。
+    # 权限只使用 Host 提供的调用者身份，不能用模型传入的名字替换身份。
     user_id = str(kwargs.get("user_id") or "").strip()
     if not check_permission(plugin.config, user_id, "send"):
         logger.info("%s 无 send_feed 权限", user_id)
-        await _send_text(plugin, f"{user_name or user_id}无权命令你发说说，请用符合人格的方式进行拒绝的回复", stream_id)
-        return _tool_failure("无权限")
+        # 拒绝结果交回当前工具调用，由主程序决定回复及目标会话。
+        return _tool_failure("当前调用者无权限发布说说。")
 
     if not topic:
         topic = "随机"
@@ -193,7 +192,6 @@ def _parse_enable_comment(value: Any, default: bool = True) -> bool:
 
 async def execute_read_feed(plugin, **kwargs: Any) -> Dict[str, Any]:
     """read_feed Tool 入口。"""
-    user_name = (kwargs.get("user_name") or "").strip()
     target_name = (kwargs.get("target_name") or "").strip()
     stream_id = kwargs.get("stream_id") or kwargs.get("chat_id") or ""
     enable_comment = _parse_enable_comment(
@@ -203,8 +201,8 @@ async def execute_read_feed(plugin, **kwargs: Any) -> Dict[str, Any]:
     # 调用者权限只使用 Host 上下文，不能用模型传入的名字替换身份。
     user_id = str(kwargs.get("user_id") or "").strip()
     if not check_permission(plugin.config, user_id, "read"):
-        await _send_text(plugin, f"{user_name or user_id}无权命令你读说说，请用符合人格的方式进行拒绝的回复", stream_id)
-        return _tool_failure("无权限")
+        # 不直接向工具上下文中的会话发送拒绝消息，避免越过主程序的回复路由。
+        return _tool_failure("当前调用者无权限读取说说。")
 
     # 目标
     target_qq, target_name_resolved = await _resolve_person(plugin, target_name)

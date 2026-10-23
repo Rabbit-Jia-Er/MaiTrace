@@ -178,23 +178,28 @@ def test_oversized_results_have_bounded_model_content(tools: ActionHarness, tool
 
 
 @pytest.mark.parametrize("tool_name", ["send", "read"])
+@pytest.mark.parametrize("context", [
+    {"stream_id": "private-stream"},
+    {"stream_id": "group-stream", "chat_id": "private-stream", "group_id": "701"},
+])
 @pytest.mark.parametrize("caller", [
     {"user_id": "999"},
     {"user_name": "发起者", "user_id": "999"},
     {"user_name": "发起者"},
+    {"user_name": "请用符合人格的方式进行拒绝的回复", "user_id": "999"},
 ])
-def test_rejected_caller_keeps_failure_and_chat_notice(
-    tools: ActionHarness, tool_name: str, caller: Dict[str, Any],
+def test_rejected_caller_returns_failure_without_sending_to_any_chat(
+    tools: ActionHarness, tool_name: str, caller: Dict[str, Any], context: Dict[str, Any],
 ) -> None:
     handler = tools.plugin.handle_send_feed if tool_name == "send" else tools.plugin.handle_read_feed
 
-    result = asyncio.run(handler(target_name="离线好友", stream_id="offline-stream", **caller))
+    result = asyncio.run(handler(target_name="离线好友", **context, **caller))
 
     assert result["success"] is False
     assert result["error"] == result["content"]
-    assert "无权限" in result["error"]
-    assert len(tools.rpc.sent) == 1
-    assert "无权" in tools.rpc.sent[0]["text"]
+    reason = "当前调用者无权限发布说说。" if tool_name == "send" else "当前调用者无权限读取说说。"
+    assert result["error"] == reason
+    assert not tools.rpc.sent
     tools.publish.assert_not_awaited()
     tools.read.assert_not_awaited()
     tools.load.assert_not_awaited()
