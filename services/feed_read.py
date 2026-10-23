@@ -156,8 +156,11 @@ async def read_and_engage(
     processed_list: dict[str, list[str]],
     *,
     cache_size: int = 100,
+    enable_comment: bool = True,
 ) -> tuple[bool, list[dict[str, Any]] | str]:
     """读说说 + 按概率点赞评论。会修改 processed_list（去重缓存）。
+
+    enable_comment=False 时不生成或发送评论，点赞与去重仍按配置执行。
 
     Returns:
         (success, feeds_list_or_error_message)
@@ -205,7 +208,7 @@ async def read_and_engage(
         rt_con = feed.get("rt_con", "")
         created_time = feed.get("created_time", "")
 
-        if random.random() <= comment_p:
+        if enable_comment and random.random() <= comment_p:
             prompt = build_comment_prompt(
                 plugin, target_name, content, created_time,
                 persona.personality, persona.style, impression, rt_con,

@@ -414,6 +414,8 @@ image_retry = 2
 
 普通评论模板支持 `{current_time}`、`{bot_personality}`、`{bot_expression}`、`{target_name}`、`{created_time}`、`{content}`、`{impression}`；转发评论另支持 `{rt_con}`。概率为 1 表示每条尝试，模型仍可跳过评论，接口也可能失败。
 
+`read_feed` 工具支持 `enable_comment=false`（或“不回复”）明确关闭本次评论，不生成评论正文；点赞与动态去重仍按配置执行。
+
 ### 自动浏览、点赞与回复（`[monitor]`）
 
 自动浏览由 `[routine]` 驱动，作者范围、互动概率和去重由本段控制。

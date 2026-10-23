@@ -176,11 +176,29 @@ async def execute_recall_qzone_activity(plugin, **kwargs: Any) -> Dict[str, Any]
     return {"success": True, "content": format_activity(entries), "count": len(entries)}
 
 
+def _parse_enable_comment(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"", "default", "默认"}:
+        return default
+    if text in {"0", "false", "no", "n", "off", "否", "不", "不回复", "不评论", "skip", "none"}:
+        return False
+    if text in {"1", "true", "yes", "y", "on", "是", "回复", "评论"}:
+        return True
+    return default
+
+
 async def execute_read_feed(plugin, **kwargs: Any) -> Dict[str, Any]:
     """read_feed Tool 入口。"""
     user_name = (kwargs.get("user_name") or "").strip()
     target_name = (kwargs.get("target_name") or "").strip()
     stream_id = kwargs.get("stream_id") or kwargs.get("chat_id") or ""
+    enable_comment = _parse_enable_comment(
+        kwargs.get("enable_comment", kwargs.get("do_comment", kwargs.get("reply"))),
+    )
 
     # 调用者权限只使用 Host 上下文，不能用模型传入的名字替换身份。
     user_id = str(kwargs.get("user_id") or "").strip()
@@ -199,7 +217,7 @@ async def execute_read_feed(plugin, **kwargs: Any) -> Dict[str, Any]:
     cache_size = plugin.config.monitor.processed_feeds_cache_size
     success, result = await read_and_engage(
         plugin, target_qq, target_name_resolved, num,
-        processed_list, cache_size=cache_size,
+        processed_list, cache_size=cache_size, enable_comment=enable_comment,
     )
     await plugin.persistence.save_processed_list(processed_list)
 
@@ -210,6 +228,6 @@ async def execute_read_feed(plugin, **kwargs: Any) -> Dict[str, Any]:
     feeds = result if isinstance(result, list) else []
     return {
         "success": True,
-        "content": _format_feed_content(target_name_resolved, feeds),
+        "content": _format_feed_content(target_name_resolved, feeds) + ("\n本次未发表评论。" if not enable_comment else ""),
         "count": len(feeds),
     }

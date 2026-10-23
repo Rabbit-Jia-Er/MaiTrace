@@ -115,7 +115,21 @@ def test_read_returns_time_text_media_forward_and_comments_without_chat_noise(to
     tools.read.assert_awaited_once_with(
         tools.plugin, "456", "离线好友", tools.plugin.config.read.read_number,
         tools.load.return_value, cache_size=tools.plugin.config.monitor.processed_feeds_cache_size,
+        enable_comment=True,
     )
+    tools.save.assert_awaited_once_with(tools.load.return_value)
+    assert not tools.rpc.sent
+
+
+@pytest.mark.parametrize("flag", [False, "false", "不回复"])
+def test_read_passes_no_comment_flag_and_returns_feeds(tools: ActionHarness, flag: Any) -> None:
+    result = asyncio.run(tools.plugin.handle_read_feed(
+        target_name="离线好友", user_id="123", enable_comment=flag,
+    ))
+    assert result["success"] is True and result["count"] == 2
+    assert "今天去河边散步" in result["content"]
+    assert "本次未发表评论" in result["content"]
+    assert tools.read.await_args.kwargs["enable_comment"] is False
     tools.save.assert_awaited_once_with(tools.load.return_value)
     assert not tools.rpc.sent
 

@@ -171,6 +171,27 @@ def test_skip_comment_keeps_like_and_deduplication(comments: CommentHarness, mod
         h.saved_feeds.assert_awaited_once_with({"friend-feed": []})
 
 
+@pytest.mark.parametrize("allow_skip", [True, False])
+def test_explicit_no_comment_avoids_model_and_keeps_like_and_deduplication(
+    comments: CommentHarness, allow_skip: bool,
+) -> None:
+    h = comments
+    h.plugin.config.read.allow_skip_comment = allow_skip
+
+    async def scenario() -> None:
+        for _ in range(2):
+            success, feeds = await feed_read.read_and_engage(
+                h.plugin, "111", "离线好友", 5, h.processed, enable_comment=False,
+            )
+            assert success and feeds == h.feeds
+
+    asyncio.run(scenario())
+    h.qzone.comment.assert_not_awaited()
+    h.qzone.like.assert_awaited_once_with("friend-feed", "111")
+    assert h.processed == {"friend-feed": []}
+    assert not h.rpc.prompts
+
+
 @pytest.mark.parametrize("mode", ["manual", "monitor"])
 @pytest.mark.parametrize(("allow_skip", "answer"), [
     (True, "看起来不错"),
