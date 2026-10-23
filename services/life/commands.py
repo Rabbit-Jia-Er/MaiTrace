@@ -22,13 +22,22 @@ class LifeCommands:
         """只认 Host 中已经存在、且与当前会话一致的本人私聊。"""
         if not stream_id or not user_id:
             return None
-        stream = await self.engine.plugin.ctx.chat.get_stream_by_user_id(user_id=user_id, platform="qq")
-        if not isinstance(stream, dict) or stream.get("session_id") != stream_id:
-            return None
-        if stream.get("chat_type") != "private" or str(stream.get("user_id", "")) != user_id:
-            return None
         user = self.engine._users.get(user_id)
-        return dict(user) if user is not None and user["enabled"] else None
+        if user is None or not user["enabled"]:
+            return None
+        # 同一 QQ 在不同账号或路由下可能有多条私聊，按 QQ 取第一条会误拒当前会话。
+        # 核验 Host 返回的当前真实 session，不凭本地映射或重新计算 ID 授权。
+        streams = await self.engine.plugin.ctx.chat.get_all_streams(platform="qq")
+        if not isinstance(streams, list):
+            return None
+        stream = next((item for item in streams if isinstance(item, dict) and item.get("session_id") == stream_id), None)
+        if stream is None:
+            return None
+        if (stream.get("platform") != "qq" or stream.get("chat_type") != "private"
+                or stream.get("group_id") or stream.get("is_group_session")
+                or str(stream.get("user_id", "")) != user_id):
+            return None
+        return dict(user)
 
     async def execute(self, content: str, *, stream_id: str = "", user_id: str = "", **kwargs: Any) -> Dict[str, Any]:
         engine = self.engine

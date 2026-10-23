@@ -45,6 +45,8 @@ class FakeRPC:
         capability, args = payload["capability"], payload["args"]
         if capability == "chat.get_stream_by_user_id":
             return {"success": True, "stream": self.private_streams.get(args["user_id"])}
+        if capability == "chat.get_all_streams":
+            return {"success": True, "streams": [*self.private_streams.values(), *self.group_streams.values()]}
         if capability == "chat.get_stream_by_group_id":
             return {"success": True, "stream": self.group_streams.get(args["group_id"])}
         if capability == "maisaka.proactive.trigger":
@@ -521,6 +523,33 @@ class LifeCase(IsolatedAsyncioTestCase):
         self.assertFalse((await self.engine.handle_command(f"dates delete {date_id}", stream_id="private-222", user_id="222"))["success"])
         self.assertTrue((await self.engine.handle_command("dates list", stream_id="private-111", user_id="111"))["data"]["dates"])
         self.assertTrue((await self.engine.handle_command(f"dates delete {date_id}", stream_id="private-111", user_id="111"))["success"])
+
+    async def test_owner_diary_accepts_current_private_route_after_old_route(self) -> None:
+        current = dict(self.rpc.private_streams["111"])
+        self.rpc.private_streams["111"] = {**current, "session_id": "old-private-111", "scope": "old-adapter"}
+        self.rpc.private_streams["111-current-route"] = current
+        diary = {"title": "昨天的生活", "content": "在家读了一本书。"}
+        await self.engine.store.save_memory(key="owner-diary", kind="diary", day="2026-10-22",
+            payload=diary, now=time.time(), privacy="owner_only")
+        result = await self.engine.handle_command("life diary", stream_id="private-111", user_id="111")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["data"], diary)
+        dates = await self.engine.handle_command("dates list", stream_id="private-111", user_id="111")
+        self.assertTrue(dates["success"])
+
+    async def test_owner_diary_rejects_wrong_identity_or_nonprivate_route(self) -> None:
+        current = dict(self.rpc.private_streams["111"])
+        variants = [{"session_id": "another-session"}, {"user_id": "222"}, {"platform": "other"},
+                    {"chat_type": "group"}, {"group_id": "701"}, {"is_group_session": True}]
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.rpc.private_streams["111"] = {**current, **variant}
+                result = await self.engine.handle_command("life diary", stream_id="private-111", user_id="111")
+                self.assertFalse(result["success"])
+        self.rpc.private_streams["111"] = current
+        self.assertFalse((await self.engine.handle_command("life diary", stream_id="private-222", user_id="222"))["success"])
+        self.engine._users["111"]["enabled"] = False
+        self.assertFalse((await self.engine.handle_command("life diary", stream_id="private-111", user_id="111"))["success"])
 
     async def test_detected_date_requires_explicit_confirmation(self) -> None:
         await self.engine.observe_message(user_id="111", session_id="private-111", message_id="date-input", text="我的生日是2027年1月2日")
