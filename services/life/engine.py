@@ -325,7 +325,7 @@ class LifeEngine:
                     "description": activity.get("description", "") if isinstance(activity, dict) else "",
                     "scene_hint": activity.get("parameters", {}).get("scene_hint", "") if isinstance(activity, dict) else "",
                     "energy": state["energy"], "hunger": state["hunger"], "mood": state["mood_valence"],
-                    "environment": state["environment"]}, ensure_ascii=False), max_tokens=650)
+                    "environment": state["environment"]}, ensure_ascii=False))
             forbidden = [str(user[field]) for user in self._users.values() for field in ("user_id", "display_name") if user[field]]
             scene = anonymous_text(required_text(response.get("scene"), "scene", 500), 500, forbidden)
             if not scene or not isinstance(response.get("shareable"), bool):

@@ -24,8 +24,9 @@ from MaiTrace.config import MaiTracePluginConfig
 from MaiTrace.services.activity import ActivityInfo, ActivityType
 from MaiTrace.services.life import LifeEngine, LifeStore
 from MaiTrace.services.life.config import ImportantDate, LifeUserProfile
-from MaiTrace.services.life.models import LifeState
+from MaiTrace.services.life.models import LifeState, generate_object, json_object
 from MaiTrace.services.life.state import LifeStateEngine
+from MaiTrace.services.llm_runner import LLMRunner
 from MaiTrace.services.messaging import MessagingController
 from MaiTrace.services.messaging.controller import PLUGIN_ID
 from MaiTrace.services.routine import RoutineRunner
@@ -514,6 +515,55 @@ class LifeCase(IsolatedAsyncioTestCase):
             await self.engine.memory.diary(now)
         self.assertEqual(await self.engine.store.memories("diary"), [])
 
+    async def test_life_materials_allow_reasoning_before_json(self) -> None:
+        self.plugin.config.life.scene_enabled = True
+        self.plugin.config.life.dream_enabled = True
+        self.plugin.config.life.diary_enabled = True
+        self.plugin.config.life.diary_hour = 0
+        now = self.engine.environment.now()
+        yesterday = (now - timedelta(days=1)).date().isoformat()
+        await self.engine.advance({"has_activity": True, "activity": {"name": "阅读", "description": "翻书",
+            "goal_type": "study", "time_window": "00:00-24:00"}}, now=now)
+        await self.engine.store.put_scene("past-scene", yesterday, "阅读", "读了一本书", now.timestamp() - 86400)
+        await self.engine.store.save_memory(key="wake", kind="wake_event", day=yesterday,
+            payload={"hours": 8}, now=now.timestamp())
+        responses = iter([
+            {"scene": "安静地翻页", "topic": "读书的午后", "motive": "想分享", "shareable": True},
+            {"summary": "梦见走过一条安静的小路", "fragments": ["小路"]},
+            {"title": "读书的一天", "content": "昨天读了一本书。", "mood_summary": "平静"},
+        ])
+
+        async def reasoning_rpc(method: str, plugin_id: str, payload: Dict[str, Any], **kwargs: Any) -> Any:
+            self.assertEqual((method, plugin_id, payload["capability"]), ("cap.call", PLUGIN_ID, "llm.generate"))
+            # 复现原有短预算只够思考、正文为空；预算充足时才返回完整素材。
+            if payload["args"]["max_tokens"] < 8192:
+                return {"success": True, "response": "", "reasoning": "正在构思", "completion_tokens": payload["args"]["max_tokens"]}
+            return {"success": True, "response": json.dumps(next(responses), ensure_ascii=False), "reasoning": "已完成构思"}
+
+        rpc = AsyncMock(side_effect=reasoning_rpc)
+        runner = LLMRunner(PluginContext(PLUGIN_ID, rpc_call=rpc), "planner")
+        self.engine.generator = self.engine.memory.generator = runner
+        await self.engine._scene(now)
+        await self.engine.memory.dreams(now)
+        await self.engine.memory.diary(now)
+        self.assertEqual(rpc.await_count, 3)
+        self.assertEqual(self.engine.peek_state()["scene"], "安静地翻页")
+        self.assertEqual((await self.engine.store.memories("dream"))[0]["payload"]["summary"], "梦见走过一条安静的小路")
+        self.assertEqual((await self.engine.store.memories("diary"))[0]["payload"]["content"], "昨天读了一本书。")
+
+    async def test_empty_scene_body_is_reported_without_saving_material(self) -> None:
+        self.plugin.config.life.scene_enabled = True
+        now = self.engine.environment.now()
+        await self.engine.advance({"has_activity": True, "activity": {"name": "阅读", "description": "翻书",
+            "goal_type": "study", "time_window": "00:00-24:00"}}, now=now)
+        rpc = AsyncMock(return_value={"success": True, "response": "", "reasoning": "PRIVATE_REASONING", "completion_tokens": 8192})
+        self.engine.generator = LLMRunner(PluginContext(PLUGIN_ID, rpc_call=rpc), "planner")
+        with self.assertRaisesRegex(RuntimeError, "仅返回推理内容，未返回正文.*max_tokens=8192.*completion_tokens=8192") as raised:
+            await self.engine._scene(now)
+        self.assertNotIn("PRIVATE_REASONING", str(raised.exception))
+        self.assertIsNone(await self.engine.store.get_scene(self.engine.peek_state()["activity_key"]))
+        self.assertEqual(await self.engine.store.list_opportunities(), [])
+
     async def test_dates_commands_require_real_private_identity(self) -> None:
         denied = await self.engine.handle_command("dates add 2027-01-02 生日", stream_id="group-701", user_id="111")
         self.assertFalse(denied["success"])
@@ -685,6 +735,25 @@ class LifeCase(IsolatedAsyncioTestCase):
         self.assertIsInstance(results[0], asyncio.CancelledError)
         self.assertIsNone(results[1])
         await asyncio.gather(self.engine.store.close(), self.engine.store.close())
+
+
+class ModelTests(IsolatedAsyncioTestCase):
+    async def test_sdk_empty_or_invalid_body_is_not_a_successful_generation(self) -> None:
+        for response in (None, "", " \n\t", {}, False):
+            with self.subTest(response=response):
+                rpc = AsyncMock(return_value={"success": True, "response": response})
+                runner = LLMRunner(PluginContext(PLUGIN_ID, rpc_call=rpc), "planner")
+                with self.assertRaisesRegex(RuntimeError, "空正文|正文类型错误"):
+                    await generate_object(runner, "返回 JSON 对象")
+                self.assertEqual(rpc.await_count, 1)
+
+    def test_json_parser_preserves_complete_objects_and_rejects_invalid_output(self) -> None:
+        expected = {"scene": "翻书", "shareable": False}
+        for text in (json.dumps(expected), "```json\n" + json.dumps(expected) + "\n```"):
+            self.assertEqual(json_object(text), expected)
+        for text in ("", " \n", "```json\n \n```", "[]", "正文说明：{}", '{"scene":', '{"scene": "翻书"} trailing'):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "空正文|JSON 对象"):
+                json_object(text)
 
 
 class StateTests(TestCase):

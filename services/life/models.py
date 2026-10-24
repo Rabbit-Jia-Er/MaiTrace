@@ -103,13 +103,19 @@ def json_object(text: str) -> Dict[str, Any]:
         lines = value.splitlines()
         if len(lines) >= 3 and lines[-1].strip() == "```":
             value = "\n".join(lines[1:-1])
-    result = json.loads(value)
+    if not value.strip():
+        raise ValueError("模型返回空正文，缺少 JSON 对象")
+    try:
+        result = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"模型结果不是完整 JSON 对象（正文长度={len(value)}）：{exc}") from exc
     if not isinstance(result, dict):
         raise ValueError("模型结果必须为 JSON 对象")
     return result
 
 
-async def generate_object(generator: TextGenerator, prompt: str, *, max_tokens: int = 1200) -> Dict[str, Any]:
+async def generate_object(generator: TextGenerator, prompt: str, *, max_tokens: int = 8192) -> Dict[str, Any]:
+    # 推理模型的思考也占输出预算，短素材同样需要留出完整 JSON 正文的空间。
     success, text = await generator.generate(prompt, temperature=0.4, max_tokens=max_tokens)
     if not success:
         raise RuntimeError(str(text))

@@ -83,4 +83,12 @@ class LLMRunner:
             return False, f"LLM 返回非 dict: {type(result).__name__}"
         if not result.get("success"):
             return False, str(result.get("error") or "LLM 返回 success=False")
-        return True, str(result.get("response") or "").strip()
+        response = result.get("response")
+        if response is not None and not isinstance(response, str):
+            return False, f"LLM 返回正文类型错误: {type(response).__name__}"
+        text = response.strip() if response is not None else ""
+        if not text:
+            detail = "仅返回推理内容，未返回正文" if result.get("reasoning") else "返回空正文"
+            return False, (f"LLM {detail}（模型任务={self._text_model}，max_tokens={max_tokens}，"
+                           f"completion_tokens={result.get('completion_tokens', '未知')}）")
+        return True, text

@@ -55,7 +55,7 @@ class MemoryService:
             prompt = ("根据以下麦麦自己的睡眠事实写醒后梦境。不得出现用户身份、聊天原话或预言。"
                       "返回 JSON 对象，summary 为40至120字，fragments 为最多3个短片段。\n"
                       + json.dumps(event["payload"], ensure_ascii=False))
-            result = await generate_object(self.generator, prompt, max_tokens=600)
+            result = await generate_object(self.generator, prompt)
             summary = required_text(result.get("summary"), "summary", 500)
             fragments = result.get("fragments", [])
             if not isinstance(fragments, list) or not all(isinstance(item, str) for item in fragments):
@@ -86,7 +86,7 @@ class MemoryService:
                   "不得猜测聊天内容、人物姓名或群号；未知内容不补写。"
                   "返回 JSON：title、content、mood_summary。日记正文不超过1000字。\n"
                   + json.dumps(source, ensure_ascii=False))
-        result = await generate_object(self.generator, prompt, max_tokens=1400)
+        result = await generate_object(self.generator, prompt)
         title, content = required_text(result.get("title"), "title", 120), required_text(result.get("content"), "content", 1400)
         if not title or not content:
             raise ValueError("日记结果缺少标题或正文")
