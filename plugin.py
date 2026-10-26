@@ -383,7 +383,7 @@ class MaiTracePlugin(MaiBotPlugin):
 
     @Tool(
         "generate_schedule_v6",
-        description="生成并应用麦麦今天的生活作息，承接近期经历与已确认约定。已有日程时直接返回。",
+        description="内置日程模式下生成并应用今日生活作息，已有日程时直接返回。选择 Mai_life 时请使用麦生活的生成功能。",
         parameters=[],
     )
     async def handle_generate_schedule(self, **kwargs: Any) -> Dict[str, Any]:
@@ -391,7 +391,7 @@ class MaiTracePlugin(MaiBotPlugin):
 
     @Tool(
         "update_schedule_v6",
-        description="按人设判断是否接受约定：今天只插入空闲时段，保留所有原活动；明天、后天、大后天可预约，冲突时协商其他时间。",
+        description="内置日程模式下按人设判断是否接受约定，插入今天空档或预约未来日期，保留原活动；选择 Mai_life 时请使用麦生活的修改功能。",
         parameters=[
             ToolParameterInfo(
                 name="description",
@@ -406,13 +406,13 @@ class MaiTracePlugin(MaiBotPlugin):
 
     async def _run_schedule_tool(self, name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         if self._schedule_engine is None or not self.config.schedule.enabled:
-            return _tool_error("内部日程尚未就绪或已关闭")
+            return _tool_error("日程尚未就绪或已关闭")
         result = await self._schedule_engine.handle_tool(name, **kwargs)
         if result.get("type") == "error" or result.get("success") is False:
             return {**result, **_tool_error(str(result.get("error") or result.get("content", "日程工具执行失败")))}
         return result
 
-    @API("get_current_activity", description="当前内部日程快照，供绘卷等插件查询", public=True, timeout_ms=10000)
+    @API("get_current_activity", description="所选日程提供方的当前活动快照，供绘卷等插件查询", public=True, timeout_ms=10000)
     async def handle_get_current_activity(self, chat_id: str = "global", **kwargs: Any) -> Dict[str, Any]:
         del chat_id, kwargs  # 日程始终是麦麦的一条全局时间线。
         if not self.config.schedule.enabled or self._schedule_engine is None:
@@ -421,7 +421,7 @@ class MaiTracePlugin(MaiBotPlugin):
                     "error": "schedule_disabled" if not self.config.schedule.enabled else "plugin_not_initialized"}
         return self._schedule_engine.current_activity_payload()
 
-    @API("get_schedule", description="获取指定日期的内部活动时间线", public=True, timeout_ms=10000)
+    @API("get_schedule", description="获取所选日程提供方指定日期的活动时间线", public=True, timeout_ms=25000)
     async def handle_get_schedule(self, day: str = "", **kwargs: Any) -> List[Dict[str, Any]]:
         del kwargs
         if not self.config.schedule.enabled or self._schedule_engine is None or not self._schedule_engine.started:

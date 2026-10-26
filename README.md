@@ -148,7 +148,7 @@ permission = ["123456789"] # 允许该用户通过聊天调用 send_feed Tool
 | `cookie_methods` | `["adapter", "napcat", "clientkey", "qrcode", "local"]` | Cookie 获取方式；前几项按近期成功率重排，扫码和缓存在末尾。空列表使用默认全部方式，刷新失败仍尝试缓存 |
 | `http_host` / `http_port` | `"127.0.0.1"` / `"9999"` | `napcat` Cookie 方式使用的 OneBot HTTP 地址；主机不带协议、端口或路径，端口是 1–65535 的数字字符串 |
 | `http_token` | `""` | OneBot HTTP 认证 Token，未设置认证时留空；适配器 API 获取与 SnowLuma 直发不使用这些 HTTP 设置 |
-| `config_version` | `"6.2.4"` | 插件维护的配置模板版本，请勿手动修改 |
+| `config_version` | `"6.3.0"` | 插件维护的配置模板版本，请勿手动修改 |
 
 ### 人设与文本模型（`[persona]` / `[llm]`）
 
@@ -168,14 +168,21 @@ permission = ["123456789"] # 允许该用户通过聊天调用 send_feed Tool
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 日程引擎总开关，控制生成、约定、注入和日程主动服务；自动空间行为也需要当前日程 |
+| `enabled` | `true` | 日程总开关，控制所选提供方的读取与注入；内置模式还控制生成、约定和日程主动服务 |
+| `provider` | `"internal"` | 日程提供方；可选 `"maibot-community.mai-life"`，读取麦生活现有公开 API，日程生成、修改与维护由麦生活负责 |
 | `allowed_streams` | `[]` | 日程注入、命令、会话 Tool 及生成聊天历史的会话白名单；空列表或 `"all"` 允许全部，不授权主动消息 |
 | `admin_users` | `[]` | `/zn plan` 的额外管理员限制；非空时调用者必须同时属于此名单和 `plugin.admin_qq` |
 | `timezone` | `"Asia/Shanghai"` | 日程、生活、空间提示词、静默窗口和每日额度共用的 IANA 时区 |
 | `auto_schedule_enabled` / `auto_schedule_time` | `true` / `"00:30"` | 每天到点生成当天缺少的日程；已有日程则跳过，启动时已过点也会检查，不主动发聊天消息 |
-| `auto_generate` | `true` | 日程查询 Tool 查询今天且无日程时补生成；与定时生成开关独立 |
+| `auto_generate` | `true` | 仅内置模式：日程查询 Tool 查询今天且无日程时补生成；与定时生成开关独立 |
 | `cross_day_activity` | `true` | 允许 `23:00-01:30` 等跨夜活动，凌晨可承接昨日活动 |
 | `custom_prompt` | `""` | 生成日程时的额外要求，例如“多安排运动，晚上留出空档”；普通文本，不使用模板占位符 |
+
+选择麦生活提供日程时，在 WebUI 的“日程与约定 → 日程提供方”选择 `maibot-community.mai-life`，或在 `[schedule]` 设置 `provider = "maibot-community.mai-life"`；麦生活需安装并启用在同一 MaiBot 实例中。默认 `provider = "internal"`，配置重载后重建所选来源。
+
+麦生活模式不启动 MaiTrace 内置日程数据库、定时生成、约定提醒和日程频率调节；原有内置记录保留，切回内置后继续使用。日程查询 Tool、`/zn plan status`、`/zn plan list`、公开日程 API、Planner/Replyer 注入、生活推进和空间活动背景统一读取麦生活日程。`/zn plan` 的生成、修改、删除、清理及相应 Tool 提示使用麦生活对应功能，不操作内置记录。
+
+外部日程在后台刷新，聊天 Hook 只读内存。提供方未就绪或查询失败时明确报告失败并自动重试，不切回内置、不补造日程。空日程和缺失历史保持为空。外部时间戳归一到 MaiTrace 的 `schedule.timezone`，生成时机仍由麦生活自己的配置控制。其余内置生成、裁判和日程主动设置只在内置模式生效；MaiTrace 生活层和空间功能仍使用自己的配置。
 
 #### 生成质量、背景与日志
 

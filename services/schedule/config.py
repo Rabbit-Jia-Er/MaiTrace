@@ -49,8 +49,14 @@ class ScheduleSection(PluginConfigBase):
 
     enabled: bool = Field(
         default=True,
-        description='日程引擎总开关，控制作息生成、约定、注入和日程主动服务。关闭后生活层仍可运行，但没有新的日程活动，Routine 也无法基于日程发帖/浏览。',
-        json_schema_extra={'label': '启用日程引擎', 'order': 1, 'hint': '日程引擎总开关，控制作息生成、约定、注入和日程主动服务。关闭后生活层仍可运行，但没有新的日程活动，Routine 也无法基于日程发帖/浏览。', 'group': '基础与会话范围'},
+        description='日程总开关，控制所选提供方的读取与日程注入；内置模式还控制生成、约定和日程主动服务。关闭后生活层仍可运行，但 Routine 无法基于日程发帖/浏览。',
+        json_schema_extra={'label': '启用日程', 'order': 1, 'hint': '控制所选提供方的读取与注入。内置模式同时控制生成、约定和日程主动服务；关闭后 Routine 无法基于日程发帖/浏览。', 'group': '基础与会话范围'},
+    )
+
+    provider: Literal['internal', 'maibot-community.mai-life'] = Field(
+        default='internal',
+        description='日程提供方：internal 使用 MaiTrace 内置日程；maibot-community.mai-life 读取同一 MaiBot 实例中 Mai_life 的公开 API，生成、修改和维护由 Mai_life 负责。切换后重建日程服务，已有内置日程保留。',
+        json_schema_extra={'label': '日程提供方', 'hint': '默认内置。选择 Mai_life 时需安装并启用麦生活，MaiTrace 只读取其日程；生成、修改、删除和清理由麦生活负责。', 'order': 2, 'group': '基础与会话范围'},
     )
 
     # 注入开关与查询。
@@ -67,8 +73,8 @@ class ScheduleSection(PluginConfigBase):
     )
     auto_generate: bool = Field(
         default=True,
-        description='日程查询 Tool 查询今天时，若没有日程则自动补生成；独立于 auto_schedule_enabled，不在普通 Hook 中生成。',
-        json_schema_extra={'label': '查询时补生成', 'hint': '日程查询 Tool 查询今天时，若没有日程则自动补生成；独立于 auto_schedule_enabled，不在普通 Hook 中生成。', 'order': 8, 'group': '注入与查询'},
+        description='仅内置模式：日程查询 Tool 查询今天时，若没有日程则自动补生成；独立于 auto_schedule_enabled，不在普通 Hook 中生成。Mai_life 模式由麦生活负责生成。',
+        json_schema_extra={'label': '查询时补生成', 'hint': '仅内置模式：查询今天且无日程时补生成。Mai_life 模式由麦生活负责生成。', 'order': 8, 'group': '注入与查询'},
     )
     max_future_activities: int = Field(
         default=3,

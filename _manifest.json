@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "Rabbit-Jia-Er.MaiTrace",
-  "version": "6.2.4",
+  "version": "6.3.0",
   "name": "MaiTrace（麦时迹）",
   "description": "MaiBot 的生活与 QQ 空间插件：让麦麦拥有每日作息、精力心情、睡眠梦境，并在合适的时候分享近况。",
   "plugin_type": "chat",

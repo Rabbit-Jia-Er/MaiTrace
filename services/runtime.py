@@ -1,6 +1,6 @@
 """MaiTrace 实例生命周期与单一协调循环。
 
-日程由 ScheduleEngine 生成，生活层只消费这条时间线，Routine 消费公开契机。
+日程由所选提供方维护，生活层只消费这条时间线，Routine 消费公开契机。
 任何初始化失败都明确上抛，并关闭已经创建的线程、数据库与后台任务。
 """
 
@@ -13,6 +13,7 @@ from .life import LifeEngine
 from .messaging import MessagingController
 from .routine import RoutineRunner
 from .schedule import ScheduleEngine
+from .schedule.mai_life import MaiLifeScheduleSource
 
 
 async def resolve_injection_streams(plugin: Any) -> None:
@@ -52,7 +53,9 @@ async def coordinate(plugin: Any) -> None:
         try:
             await plugin._schedule_engine.refresh()
             if plugin._life_engine is not None:
-                await plugin._life_engine.advance(plugin._schedule_engine.current_activity_payload())
+                snapshot = plugin._schedule_engine.current_activity_payload()
+                if not plugin.config.schedule.enabled or not snapshot.get("error"):
+                    await plugin._life_engine.advance(snapshot)
                 plugin._schedule_engine.update_life_state(plugin._life_engine.peek_state(),
                     managed_private_streams=plugin._life_engine.managed_private_streams())
             else:
@@ -77,14 +80,17 @@ async def start_runtime(plugin: Any) -> None:
         copied = await plugin.persistence.migrate_legacy_data(plugin.plugin_dir)
         if copied:
             plugin.ctx.logger.info("MaiTrace 旧数据迁移完成，共复制 %s 个文件", copied)
-        plugin._schedule_engine = ScheduleEngine(plugin, data_dir=data_dir / "schedule")
+        source = MaiLifeScheduleSource if plugin.config.schedule.provider == "maibot-community.mai-life" else ScheduleEngine
+        plugin._schedule_engine = source(plugin, data_dir=data_dir / "schedule")
         await plugin._schedule_engine.start()
         if plugin.config.life.enabled:
             plugin._life_engine = LifeEngine(
                 plugin, data_dir=data_dir / "life", schedule_engine=plugin._schedule_engine,
             )
             await plugin._life_engine.start()
-            await plugin._life_engine.advance(plugin._schedule_engine.current_activity_payload())
+            snapshot = plugin._schedule_engine.current_activity_payload()
+            if not plugin.config.schedule.enabled or not snapshot.get("error"):
+                await plugin._life_engine.advance(snapshot)
             plugin._schedule_engine.update_life_state(plugin._life_engine.peek_state(),
                 managed_private_streams=plugin._life_engine.managed_private_streams())
         plugin._injection = InjectionEngine(plugin)

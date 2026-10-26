@@ -64,8 +64,8 @@ async def dispatch_zn(plugin, **kwargs: Any) -> tuple:
     # 日程和生活命令共用上方的 MaiTrace 管理员校验。
     if cmd == "plan":
         if plugin.schedule_engine is None or not plugin.config.schedule.enabled:
-            await plugin.ctx.send.text("内部日程未启用", stream_id)
-            return False, "内部日程未启用", True
+            await plugin.ctx.send.text("日程未启用", stream_id)
+            return False, "日程未启用", True
         return await plugin.schedule_engine.handle_command(
             param or "status", stream_id=stream_id, user_id=user_id,
             group_id=group_id, platform=str(kwargs.get("platform") or "qq"),

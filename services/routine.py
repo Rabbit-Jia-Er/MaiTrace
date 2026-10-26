@@ -1,6 +1,6 @@
 """MaiTrace Routine 模式 - 日程驱动统一行为管理。
 
-读取本实例的内部日程快照和公开生活契机，由 LLM 决策是否发说说 / 刷空间，
+读取所选日程提供方的内置格式快照和公开生活契机，由 LLM 决策是否发说说 / 刷空间，
 只在有具体生活素材时考虑公开分享。
 
 由 plugin.py on_load 创建并启动，on_unload 停止。
@@ -41,9 +41,9 @@ logger = get_logger(__name__)
 
 
 class InternalScheduleProvider:
-    """读取 MaiTrace 的内部活动快照。
+    """读取当前日程来源的内置格式快照。
 
-    只读取当前 MaiTrace 实例的日程快照，不依赖其他插件或读取其他数据库。
+    来源由运行时选择；这里只读取已缓存的统一结构，不执行跨插件 RPC。
     """
 
     def __init__(self, plugin) -> None:
@@ -55,10 +55,10 @@ class InternalScheduleProvider:
             return None
         result = self.plugin.schedule_engine.current_activity_payload()
         if not isinstance(result, dict):
-            raise TypeError("内部日程快照必须是字典")
+            raise TypeError("日程快照必须是字典")
         self._last_snapshot = result
         if result.get("error"):
-            raise RuntimeError(f"内部日程查询失败: {result['error']}")
+            raise RuntimeError(f"日程查询失败: {result['error']}")
 
         if not result.get("has_activity"):
             return None
@@ -78,7 +78,7 @@ class InternalScheduleProvider:
         )
 
     def get_last_snapshot(self) -> Optional[Dict[str, Any]]:
-        """供调试命令展示最近读取的内部快照。"""
+        """供调试命令展示所选来源最近读取的快照。"""
         return dict(self._last_snapshot) if self._last_snapshot else None
 
 
@@ -106,7 +106,7 @@ class RoutineRunner:
         return list(self._decision_history)
 
     def get_planning_snapshot(self) -> Optional[Dict[str, Any]]:
-        """返回本实例最近读取的内部日程快照。"""
+        """返回本实例从所选来源最近读取的日程快照。"""
         if self.schedule_provider is None:
             return None
         return self.schedule_provider.get_last_snapshot()
@@ -133,7 +133,7 @@ class RoutineRunner:
         self.schedule_provider = InternalScheduleProvider(self.plugin)
         self.is_running = True
         self.task = asyncio.create_task(self._loop())
-        logger.info("Routine 已启动（使用 MaiTrace 内部日程与生活契机）")
+        logger.info("Routine 已启动（日程提供方=%s）", self.plugin.config.schedule.provider)
 
     async def stop(self) -> None:
         self.is_running = False

@@ -66,7 +66,7 @@ class PluginSection(PluginConfigBase):
         json_schema_extra={'label': '启用插件', 'hint': '插件总开关；关闭后停止日程、生活、空间和消息服务。', 'order': 1, 'group': '基础'},
     )
     config_version: str = Field(
-        default='6.2.4',
+        default='6.3.0',
         description='配置模板版本，由 SDK 和插件维护；升级保留已有有效设置，请勿手动修改。',
         json_schema_extra={'label': '配置版本', 'disabled': True, 'order': 2, 'hint': '配置模板版本，由 SDK 和插件维护；升级保留已有有效设置，请勿手动修改。', 'group': '基础'},
     )

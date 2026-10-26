@@ -13,7 +13,7 @@ ActivityName = Literal[
 
 
 class RoutineSection(PluginConfigBase):
-    """从内部日程读取当前活动，让模型判断是否发帖或浏览；自动发帖还要求生活引擎提供可公开素材。"""
+    """从所选日程提供方读取当前活动，让模型判断是否发帖或浏览；自动发帖还要求生活引擎提供可公开素材。"""
 
     __ui_label__: ClassVar[str] = '空间自动行为'
     __ui_icon__: ClassVar[str] = "clock"

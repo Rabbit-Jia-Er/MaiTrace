@@ -1,6 +1,6 @@
 [project]
 name = "maitrace"
-version = "6.2.4"
+version = "6.3.0"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE", "LICENSES/MaiTrace-legacy-MIT.txt", "LICENSES/message-reader-MIT.txt", "LICENSES/activity-history-MIT.txt"]
 description = "麦时迹：MaiBot 内部日程、生活状态、素材与 QQ 空间"
